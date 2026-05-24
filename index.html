@@ -86,6 +86,23 @@
       { name: "保加利亞分腿蹲", group: "腿", equipment: "dumbbell", weightRecording: "single" },
     ];
     const PRESET_EXERCISES = PRESET_CATALOG.map(e => e.name);
+
+    // Cutting plan training-day layout — drives the grouped preset chips.
+    const TRAINING_DAYS = [
+      { label: "Day 1 · 胸 + 三頭", exercises: ["啞鈴胸推", "上斜啞鈴胸推", "胸飛鳥", "Cable 三頭下壓", "過頭三頭伸展"] },
+      { label: "Day 2 · 背 + 二頭", exercises: ["滑輪下拉", "坐姿划船", "Pull over", "二頭彎舉", "錘式彎舉"] },
+      { label: "Day 3 · 肩",        exercises: ["啞鈴肩推", "側平舉", "單手繩索反向飛鳥"] },
+      { label: "Day 4 · 腿",        exercises: ["深蹲", "腿舉", "啞鈴硬舉", "坐姿腿彎舉"] },
+    ];
+
+    const WEIGHT_RECORDING_GUIDE = [
+      { equipment: "啞鈴（雙手各持一個）", recording: "單手重量" },
+      { equipment: "槓鈴",                 recording: "總重（槓 + 兩側片）" },
+      { equipment: "斜向腿舉 / 坐式腿舉",   recording: "總重" },
+      { equipment: "Cable 單手動作",       recording: "單側重量" },
+      { equipment: "腿彎舉 / 腿伸展機",     recording: "總重（pin 選的數字）" },
+    ];
+
     const MUSCLE_GROUP_COLORS = {
       "胸": "#ff6b6b", "背": "#4ecdc4", "肩": "#ffd166",
       "腿": "#95e1d3", "二頭": "#a78bfa", "三頭": "#a78bfa",
@@ -481,6 +498,7 @@
               <TodayView
                 session={session}
                 selectedDate={selectedDate}
+                setSelectedDate={setSelectedDate}
                 newExercise={newExercise}
                 setNewExercise={setNewExercise}
                 showPresets={showPresets}
@@ -564,8 +582,39 @@
       );
     }
 
+    // ─── RecordingGuide ────────────────────────────────────────────────────
+    function RecordingGuide() {
+      const [open, setOpen] = useState(false);
+      return (
+        <div style={S.guideBox}>
+          <button style={S.guideToggle} onClick={() => setOpen(!open)}>
+            <span>ⓘ 重量記錄慣例</span>
+            <span style={S.guideChevron}>{open ? "▾" : "▸"}</span>
+          </button>
+          {open && (
+            <table style={S.guideTable}>
+              <thead>
+                <tr>
+                  <th style={S.guideTh}>器材</th>
+                  <th style={S.guideTh}>紀錄方式</th>
+                </tr>
+              </thead>
+              <tbody>
+                {WEIGHT_RECORDING_GUIDE.map((row, i) => (
+                  <tr key={i}>
+                    <td style={S.guideTd}>{row.equipment}</td>
+                    <td style={{...S.guideTd, ...S.guideTdRight}}>{row.recording}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      );
+    }
+
     // ─── TodayView ─────────────────────────────────────────────────────────
-    function TodayView({ session, selectedDate, newExercise, setNewExercise,
+    function TodayView({ session, selectedDate, setSelectedDate, newExercise, setNewExercise,
       showPresets, setShowPresets, handleAddExercise, addSet,
       updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog }) {
 
@@ -574,10 +623,27 @@
             sum + ex.sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0), 0)
         : 0;
 
+      const isToday = selectedDate === todayStr();
+      const presetNames = new Set(PRESET_EXERCISES);
+      const customNames = Object.keys(catalog || {}).filter(n => !presetNames.has(n));
+
       return (
         <div>
+          <RecordingGuide />
+
           <div style={S.dateBar}>
-            <span style={S.dateText}>{formatDate(selectedDate)}</span>
+            <label style={{...S.dateText, ...S.dateLabel, ...(isToday ? {} : S.dateLabelNotToday)}}>
+              <span>{formatDate(selectedDate)}</span>
+              {!isToday && <button style={S.backToTodayBtn}
+                onClick={(e) => { e.preventDefault(); setSelectedDate(todayStr()); }}>回今天</button>}
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={e => e.target.value && setSelectedDate(e.target.value)}
+                style={S.hiddenDateInput}
+                aria-label="選擇日期"
+              />
+            </label>
             {totalVolume > 0 && <span style={S.volumeBadge}>總量 {totalVolume.toLocaleString()} kg</span>}
           </div>
 
@@ -592,7 +658,7 @@
             : (
               <div style={S.emptyState}>
                 <div style={S.emptyIcon}>💪</div>
-                <p style={S.emptyText}>今日尚無訓練紀錄</p>
+                <p style={S.emptyText}>{isToday ? "今日尚無訓練紀錄" : "這天還沒有紀錄"}</p>
                 <p style={S.emptyHint}>新增第一個動作開始</p>
               </div>
             )
@@ -611,10 +677,35 @@
               <button style={{...S.addBtn, ...S.presetBtn}} onClick={() => setShowPresets(!showPresets)}>常用</button>
             </div>
             {showPresets && (
-              <div style={S.presets}>
-                {PRESET_EXERCISES.map(p => (
-                  <button key={p} style={S.presetChip} onClick={() => handleAddExercise(p)}>{p}</button>
+              <div style={S.presetsBox}>
+                {TRAINING_DAYS.map(day => (
+                  <div key={day.label} style={S.presetGroup}>
+                    <div style={S.presetGroupHeader}>{day.label}</div>
+                    <div style={S.presetChips}>
+                      {day.exercises.map(name => {
+                        const meta = catalog?.[name];
+                        const color = meta?.group ? (MUSCLE_GROUP_COLORS[meta.group] || MUSCLE_GROUP_COLORS["其他"]) : C.textMuted;
+                        return (
+                          <button key={name}
+                            style={{...S.presetChip, borderColor: color + "55"}}
+                            onClick={() => handleAddExercise(name)}>
+                            {name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 ))}
+                {customNames.length > 0 && (
+                  <div style={S.presetGroup}>
+                    <div style={S.presetGroupHeader}>其他</div>
+                    <div style={S.presetChips}>
+                      {customNames.map(name => (
+                        <button key={name} style={S.presetChip} onClick={() => handleAddExercise(name)}>{name}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -766,6 +857,21 @@
       main: { padding: "16px 16px 0" },
       dateBar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
       dateText: { fontSize: 22, fontWeight: 800, letterSpacing: 1 },
+      dateLabel: { position: "relative", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, padding: "4px 8px", margin: "-4px -8px", borderRadius: 8 },
+      dateLabelNotToday: { background: C.surfaceHigh, color: C.accent },
+      hiddenDateInput: { position: "absolute", inset: 0, opacity: 0, cursor: "pointer", fontSize: 16, border: "none", padding: 0, background: "transparent" },
+      backToTodayBtn: { background: C.surface, border: `1px solid ${C.border}`, color: C.textMuted, fontSize: 11, padding: "3px 8px", borderRadius: 10, cursor: "pointer", fontFamily: "inherit", fontWeight: 500, position: "relative", zIndex: 1 },
+      guideBox: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, marginBottom: 12, overflow: "hidden" },
+      guideToggle: { width: "100%", background: "none", border: "none", color: C.textMuted, fontSize: 12, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", fontFamily: "inherit" },
+      guideChevron: { fontSize: 12, color: C.textMuted },
+      guideTable: { width: "100%", borderCollapse: "collapse", fontSize: 12 },
+      guideTh: { textAlign: "left", padding: "8px 14px", color: C.textMuted, fontWeight: 600, borderTop: `1px solid ${C.border}`, background: C.surfaceHigh },
+      guideTd: { padding: "8px 14px", borderTop: `1px solid ${C.border}`, color: C.text, verticalAlign: "top" },
+      guideTdRight: { color: C.accent, fontWeight: 600 },
+      presetsBox: { marginTop: 12, padding: 12, background: C.surface, borderRadius: C.radius, border: `1px solid ${C.border}` },
+      presetGroup: { marginBottom: 12 },
+      presetGroupHeader: { fontSize: 11, color: C.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 6, textTransform: "uppercase" },
+      presetChips: { display: "flex", flexWrap: "wrap", gap: 6 },
       volumeBadge: { background: C.surfaceHigh, color: C.accent, fontSize: 12, padding: "4px 10px", borderRadius: 20, fontWeight: 600 },
       emptyState: { textAlign: "center", padding: "60px 20px", color: C.textMuted },
       emptyIcon: { fontSize: 48, marginBottom: 12 },
@@ -791,7 +897,6 @@
       input: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, color: C.text, fontSize: 14, padding: "10px 14px", fontFamily: "inherit", outline: "none" },
       addBtn: { background: C.accent, border: "none", borderRadius: C.radius, color: "#000", fontWeight: 700, fontSize: 13, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" },
       presetBtn: { background: C.surfaceHigh, color: C.text, fontWeight: 500 },
-      presets: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, padding: 12, background: C.surface, borderRadius: C.radius, border: `1px solid ${C.border}` },
       presetChip: { background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 20, color: C.text, fontSize: 13, padding: "6px 14px", cursor: "pointer", fontFamily: "inherit" },
       historyHint: { fontSize: 12, color: C.textMuted, marginBottom: 12 },
       backupSection: { marginBottom: 20, padding: 12, background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius },
