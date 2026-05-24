@@ -32,7 +32,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect } = React;
+    const { useState, useEffect, useRef } = React;
 
     const STORAGE_KEY = "training-log-v1";
     const PRESET_EXERCISES = [
@@ -144,6 +144,49 @@
         ));
       };
 
+      const exportData = () => {
+        const data = JSON.stringify(logs, null, 2);
+        const blob = new Blob([data], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `training-log-${todayStr()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showToast(`已匯出 ${logs.length} 筆紀錄`);
+      };
+
+      const importData = (file) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          try {
+            const data = JSON.parse(e.target.result);
+            if (!Array.isArray(data)) throw new Error("檔案不是陣列");
+            const valid = data.every(d =>
+              typeof d.date === "string" && Array.isArray(d.exercises)
+            );
+            if (!valid) throw new Error("資料格式不符");
+
+            const existingDates = new Set(logs.map(l => l.date));
+            const newOnes = data.filter(d => !existingDates.has(d.date));
+            const merged = [...newOnes, ...logs].sort((a, b) => b.date.localeCompare(a.date));
+            save(merged);
+            const skipped = data.length - newOnes.length;
+            showToast(
+              skipped > 0
+                ? `已合併 ${newOnes.length} 筆（跳過 ${skipped} 筆已存在）`
+                : `已匯入 ${newOnes.length} 筆紀錄`
+            );
+          } catch (err) {
+            showToast("匯入失敗：" + err.message);
+          }
+        };
+        reader.readAsText(file);
+      };
+
       const session = getSession();
 
       return (
@@ -188,6 +231,8 @@
               <HistoryView
                 logs={logs}
                 onSelect={(date) => { setSelectedDate(date); setView("today"); }}
+                onExport={exportData}
+                onImport={importData}
               />
             )}
           </main>
@@ -307,33 +352,65 @@
     }
 
     // ─── HistoryView ───────────────────────────────────────────────────────
-    function HistoryView({ logs, onSelect }) {
-      if (logs.length === 0) return (
-        <div style={S.emptyState}>
-          <div style={S.emptyIcon}>📋</div>
-          <p style={S.emptyText}>尚無歷史紀錄</p>
-        </div>
-      );
+    function HistoryView({ logs, onSelect, onExport, onImport }) {
+      const fileInputRef = useRef(null);
+      const handleFileChange = (e) => {
+        const file = e.target.files?.[0];
+        if (file) onImport(file);
+        e.target.value = "";
+      };
+
       return (
         <div>
-          <p style={S.historyHint}>點擊日期可查看或編輯</p>
-          {logs.map(l => {
-            const totalSets = l.exercises.reduce((s, e) => s + e.sets.length, 0);
-            const volume = l.exercises.reduce((sum, ex) =>
-              sum + ex.sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0), 0);
-            return (
-              <div key={l.date} style={S.historyCard} onClick={() => onSelect(l.date)}>
-                <div style={S.historyDate}>{formatDate(l.date)}</div>
-                <div style={S.historyMeta}>
-                  <span>{l.exercises.length} 個動作</span>
-                  <span style={S.dot}>·</span>
-                  <span>{totalSets} 組</span>
-                  {volume > 0 && <><span style={S.dot}>·</span><span>{volume.toLocaleString()} kg</span></>}
-                </div>
-                <div style={S.historyExList}>{l.exercises.map(e => e.name).join("、")}</div>
-              </div>
-            );
-          })}
+          <div style={S.backupSection}>
+            <div style={S.backupRow}>
+              <button
+                style={{...S.backupBtn, ...(logs.length === 0 ? S.backupBtnDisabled : {})}}
+                onClick={onExport}
+                disabled={logs.length === 0}>
+                ⬇ 匯出 JSON
+              </button>
+              <button style={S.backupBtn} onClick={() => fileInputRef.current?.click()}>
+                ⬆ 匯入 JSON
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                style={{ display: "none" }}
+                onChange={handleFileChange}
+              />
+            </div>
+            <p style={S.backupHint}>匯入採合併策略：已存在的日期會保留現有版本</p>
+          </div>
+
+          {logs.length === 0 ? (
+            <div style={S.emptyState}>
+              <div style={S.emptyIcon}>📋</div>
+              <p style={S.emptyText}>尚無歷史紀錄</p>
+            </div>
+          ) : (
+            <>
+              <p style={S.historyHint}>點擊日期可查看或編輯</p>
+              {logs.map(l => {
+                const totalSets = l.exercises.reduce((s, e) => s + e.sets.length, 0);
+                const volume = l.exercises.reduce((sum, ex) =>
+                  sum + ex.sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0), 0);
+                return (
+                  <div key={l.date} style={S.historyCard} onClick={() => onSelect(l.date)}>
+                    <div style={S.historyDate}>{formatDate(l.date)}</div>
+                    <div style={S.historyMeta}>
+                      <span>{l.exercises.length} 個動作</span>
+                      <span style={S.dot}>·</span>
+                      <span>{totalSets} 組</span>
+                      {volume > 0 && <><span style={S.dot}>·</span><span>{volume.toLocaleString()} kg</span></>}
+                    </div>
+                    <div style={S.historyExList}>{l.exercises.map(e => e.name).join("、")}</div>
+                  </div>
+                );
+              })}
+            </>
+          )}
         </div>
       );
     }
@@ -382,6 +459,11 @@
       presets: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, padding: 12, background: C.surface, borderRadius: C.radius, border: `1px solid ${C.border}` },
       presetChip: { background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 20, color: C.text, fontSize: 13, padding: "6px 14px", cursor: "pointer", fontFamily: "inherit" },
       historyHint: { fontSize: 12, color: C.textMuted, marginBottom: 12 },
+      backupSection: { marginBottom: 20, padding: 12, background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius },
+      backupRow: { display: "flex", gap: 8, marginBottom: 8 },
+      backupBtn: { flex: 1, background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: C.radius, color: C.text, fontSize: 13, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 },
+      backupBtnDisabled: { opacity: 0.4, cursor: "not-allowed" },
+      backupHint: { fontSize: 11, color: C.textMuted, opacity: 0.7, margin: 0, lineHeight: 1.4 },
       historyCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 14, marginBottom: 10, cursor: "pointer" },
       historyDate: { fontSize: 16, fontWeight: 700, marginBottom: 4 },
       historyMeta: { fontSize: 13, color: C.textMuted, marginBottom: 6, display: "flex", gap: 6, alignItems: "center" },
