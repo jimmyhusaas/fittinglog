@@ -40,6 +40,25 @@ $$;
 create trigger sessions_touch
   before update on public.sessions
   for each row execute function public.touch_updated_at();
+
+-- Exercise catalog (metadata per exercise name, used for muscle-group
+-- tagging and future menu/plan linking + trend analytics).
+create table if not exists public.exercises (
+  user_id uuid references auth.users on delete cascade not null default auth.uid(),
+  name text not null,
+  muscle_group text,
+  equipment text,
+  weight_recording text default 'single', -- 'single' (dumbbell) | 'total' (barbell)
+  created_at timestamptz not null default now(),
+  primary key (user_id, name)
+);
+
+alter table public.exercises enable row level security;
+
+create policy "users access own exercises"
+  on public.exercises for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
 ```
 
 說明：

@@ -46,11 +46,51 @@
     const sb = CLOUD_ENABLED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
     const STORAGE_KEY = "training-log-v1";
-    const PRESET_EXERCISES = [
-      "臥推","深蹲","硬舉","肩推","划船",
-      "引體向上","腿推","二頭彎舉","三頭下壓","飛鳥",
-      "腿彎舉","腿伸展","側平舉","面拉","保加利亞分腿蹲"
+    const CATALOG_KEY = "exercise-catalog-v1";
+
+    // Seed metadata for the preset exercises. Anything added at runtime
+    // gets stub metadata (group="其他", equipment=null) until user edits.
+    // Names mirror the cutting plan menu so tags work out-of-the-box.
+    const PRESET_CATALOG = [
+      // 胸
+      { name: "啞鈴胸推",      group: "胸", equipment: "dumbbell", weightRecording: "single" },
+      { name: "上斜啞鈴胸推",  group: "胸", equipment: "dumbbell", weightRecording: "single" },
+      { name: "胸飛鳥",        group: "胸", equipment: "machine",  weightRecording: "total"  },
+      { name: "臥推",          group: "胸", equipment: "barbell",  weightRecording: "total"  },
+      // 三頭
+      { name: "Cable 三頭下壓", group: "三頭", equipment: "cable",   weightRecording: "total"  },
+      { name: "過頭三頭伸展",   group: "三頭", equipment: "dumbbell", weightRecording: "single" },
+      // 背
+      { name: "滑輪下拉",      group: "背", equipment: "cable",    weightRecording: "total"  },
+      { name: "坐姿划船",      group: "背", equipment: "cable",    weightRecording: "total"  },
+      { name: "Pull over",     group: "背", equipment: "dumbbell", weightRecording: "single" },
+      { name: "硬舉",          group: "背", equipment: "barbell",  weightRecording: "total"  },
+      { name: "引體向上",      group: "背", equipment: "bodyweight", weightRecording: "total" },
+      // 二頭
+      { name: "二頭彎舉",      group: "二頭", equipment: "dumbbell", weightRecording: "single" },
+      { name: "錘式彎舉",      group: "二頭", equipment: "dumbbell", weightRecording: "single" },
+      // 肩
+      { name: "啞鈴肩推",      group: "肩", equipment: "dumbbell", weightRecording: "single" },
+      { name: "側平舉",        group: "肩", equipment: "dumbbell", weightRecording: "single" },
+      { name: "單手繩索反向飛鳥", group: "肩", equipment: "cable",  weightRecording: "single" },
+      { name: "面拉",          group: "肩", equipment: "cable",    weightRecording: "total"  },
+      { name: "肩推",          group: "肩", equipment: "barbell",  weightRecording: "total"  },
+      // 腿
+      { name: "深蹲",          group: "腿", equipment: "barbell",  weightRecording: "total"  },
+      { name: "腿舉",          group: "腿", equipment: "machine",  weightRecording: "total"  },
+      { name: "啞鈴硬舉",      group: "腿", equipment: "dumbbell", weightRecording: "single" },
+      { name: "坐姿腿彎舉",    group: "腿", equipment: "machine",  weightRecording: "total"  },
+      { name: "腿推",          group: "腿", equipment: "machine",  weightRecording: "total"  },
+      { name: "腿彎舉",        group: "腿", equipment: "machine",  weightRecording: "total"  },
+      { name: "腿伸展",        group: "腿", equipment: "machine",  weightRecording: "total"  },
+      { name: "保加利亞分腿蹲", group: "腿", equipment: "dumbbell", weightRecording: "single" },
     ];
+    const PRESET_EXERCISES = PRESET_CATALOG.map(e => e.name);
+    const MUSCLE_GROUP_COLORS = {
+      "胸": "#ff6b6b", "背": "#4ecdc4", "肩": "#ffd166",
+      "腿": "#95e1d3", "二頭": "#a78bfa", "三頭": "#a78bfa",
+      "核心": "#f4a261", "其他": "#888",
+    };
 
     const formatDate = (d) => {
       const date = new Date(d + "T00:00:00");
@@ -66,9 +106,41 @@
       localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
     };
 
+    // Catalog is keyed by name (names are unique per user; this matches
+    // the Supabase unique constraint and avoids a local/cloud id-mapping
+    // problem). Value: { group, equipment, weightRecording }.
+    const loadCatalog = () => {
+      try { return JSON.parse(localStorage.getItem(CATALOG_KEY)) || {}; }
+      catch { return {}; }
+    };
+    const saveCatalog = (cat) => {
+      localStorage.setItem(CATALOG_KEY, JSON.stringify(cat));
+    };
+
+    // Build initial catalog: presets + any names observed in existing
+    // sessions get a stub entry so they show up in the catalog even
+    // before user has edited metadata.
+    const seedCatalog = (existingCat, logs) => {
+      const next = { ...existingCat };
+      for (const p of PRESET_CATALOG) {
+        if (!next[p.name]) next[p.name] = { group: p.group, equipment: p.equipment, weightRecording: p.weightRecording };
+      }
+      for (const l of logs) {
+        for (const ex of l.exercises) {
+          if (!next[ex.name]) next[ex.name] = { group: "其他", equipment: null, weightRecording: "single" };
+        }
+      }
+      return next;
+    };
+
     // ─── App ───────────────────────────────────────────────────────────────
     function App() {
       const [logs, setLogs] = useState(loadLogs);
+      const [catalog, setCatalog] = useState(() => {
+        const initial = seedCatalog(loadCatalog(), loadLogs());
+        saveCatalog(initial);
+        return initial;
+      });
       const [view, setView] = useState("today");
       const [selectedDate, setSelectedDate] = useState(todayStr());
       const [newExercise, setNewExercise] = useState("");
@@ -78,6 +150,21 @@
       const [user, setUser] = useState(null);
       const [authReady, setAuthReady] = useState(!CLOUD_ENABLED);
       const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | error | offline
+
+      const ensureInCatalog = (name) => {
+        if (catalog[name]) return;
+        const preset = PRESET_CATALOG.find(p => p.name === name);
+        const entry = preset
+          ? { group: preset.group, equipment: preset.equipment, weightRecording: preset.weightRecording }
+          : { group: "其他", equipment: null, weightRecording: "single" };
+        const next = { ...catalog, [name]: entry };
+        setCatalog(next);
+        saveCatalog(next);
+        if (CLOUD_ENABLED && user) {
+          sb.from("exercises").upsert({ name, ...entry }, { onConflict: "user_id,name" })
+            .then(({ error }) => { if (error) console.warn("catalog upsert failed:", error); });
+        }
+      };
 
       const showToast = (msg) => {
         setToast(msg);
@@ -137,13 +224,50 @@
         if (!user) return;
         let cancelled = false;
         setSyncStatus("syncing");
-        sb.from("sessions").select("date, exercises").then(({ data, error }) => {
+        Promise.all([
+          sb.from("sessions").select("date, exercises"),
+          sb.from("exercises").select("name, muscle_group, equipment, weight_recording"),
+        ]).then(([sessionsRes, catRes]) => {
           if (cancelled) return;
-          if (error) {
+          if (sessionsRes.error) {
             setSyncStatus("error");
-            showToast("雲端讀取失敗：" + error.message);
+            showToast("雲端讀取失敗：" + sessionsRes.error.message);
             return;
           }
+          // Merge catalog: cloud entries override local stubs; local-only entries get pushed up.
+          const cloudCat = {};
+          const localOnlyCatNames = [];
+          if (!catRes.error && catRes.data) {
+            for (const row of catRes.data) {
+              cloudCat[row.name] = {
+                group: row.muscle_group || "其他",
+                equipment: row.equipment,
+                weightRecording: row.weight_recording || "single",
+              };
+            }
+          }
+          const mergedCat = { ...catalog };
+          for (const [name, entry] of Object.entries(cloudCat)) {
+            mergedCat[name] = entry;
+          }
+          for (const name of Object.keys(catalog)) {
+            if (!(name in cloudCat)) localOnlyCatNames.push(name);
+          }
+          setCatalog(mergedCat);
+          saveCatalog(mergedCat);
+          if (localOnlyCatNames.length && !catRes.error) {
+            const rows = localOnlyCatNames.map(n => ({
+              name: n,
+              muscle_group: mergedCat[n].group,
+              equipment: mergedCat[n].equipment,
+              weight_recording: mergedCat[n].weightRecording,
+            }));
+            sb.from("exercises").upsert(rows, { onConflict: "user_id,name" })
+              .then(({ error }) => { if (error) console.warn("catalog push failed:", error); });
+          }
+
+          // Merge sessions (existing behavior)
+          const data = sessionsRes.data;
           const cloudByDate = new Map(data.map(r => [r.date, r.exercises]));
           const localByDate = new Map(logs.map(l => [l.date, l.exercises]));
           const allDates = new Set([...cloudByDate.keys(), ...localByDate.keys()]);
@@ -160,7 +284,6 @@
           merged.sort((a, b) => b.date.localeCompare(a.date));
           setLogs(merged);
           saveLogs(merged);
-          // Push any local-only dates up to cloud so they're not stranded
           if (localOnlyDates.length) {
             syncDatesToCloud(merged, localOnlyDates);
           } else {
@@ -192,6 +315,7 @@
 
       const handleAddExercise = (name) => {
         if (!name.trim()) return;
+        ensureInCatalog(name.trim());
         const existing = logs.find(l => l.date === selectedDate);
         let newLogs;
         if (existing) {
@@ -368,6 +492,7 @@
                 deleteExercise={deleteExercise}
                 editingSet={editingSet}
                 setEditingSet={setEditingSet}
+                catalog={catalog}
               />
             )}
             {view === "history" && (
@@ -442,7 +567,7 @@
     // ─── TodayView ─────────────────────────────────────────────────────────
     function TodayView({ session, selectedDate, newExercise, setNewExercise,
       showPresets, setShowPresets, handleAddExercise, addSet,
-      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet }) {
+      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog }) {
 
       const totalVolume = session
         ? session.exercises.reduce((sum, ex) =>
@@ -461,7 +586,8 @@
                 <ExerciseCard key={exIdx} ex={ex} exIdx={exIdx}
                   addSet={addSet} updateSet={updateSet}
                   deleteSet={deleteSet} deleteExercise={deleteExercise}
-                  editingSet={editingSet} setEditingSet={setEditingSet} />
+                  editingSet={editingSet} setEditingSet={setEditingSet}
+                  meta={catalog?.[ex.name]} />
               ))
             : (
               <div style={S.emptyState}>
@@ -497,14 +623,22 @@
     }
 
     // ─── ExerciseCard ──────────────────────────────────────────────────────
-    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet }) {
+    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta }) {
       const maxWeight = ex.sets.length > 0 ? Math.max(...ex.sets.map(s => parseFloat(s.weight)||0)) : 0;
+      const groupColor = meta?.group ? (MUSCLE_GROUP_COLORS[meta.group] || MUSCLE_GROUP_COLORS["其他"]) : null;
 
       return (
         <div style={S.card}>
           <div style={S.cardHeader}>
             <div>
-              <h3 style={S.exName}>{ex.name}</h3>
+              <div style={S.exNameRow}>
+                <h3 style={S.exName}>{ex.name}</h3>
+                {meta?.group && (
+                  <span style={{...S.muscleTag, background: groupColor + "22", color: groupColor, borderColor: groupColor + "44"}}>
+                    {meta.group}
+                  </span>
+                )}
+              </div>
               <span style={S.exMeta}>{ex.sets.length} 組{maxWeight > 0 && ` · 最高 ${maxWeight}kg`}</span>
             </div>
             <button style={S.deleteExBtn} onClick={() => deleteExercise(exIdx)}>✕</button>
@@ -640,6 +774,8 @@
       card: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 16, marginBottom: 12 },
       cardHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 },
       exName: { margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: 0.5 },
+      exNameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
+      muscleTag: { fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700, border: "1px solid", letterSpacing: 1 },
       exMeta: { fontSize: 12, color: C.textMuted, marginTop: 2, display: "block" },
       deleteExBtn: { background: "none", border: "none", color: C.textMuted, fontSize: 14, cursor: "pointer", padding: "2px 6px", borderRadius: 4 },
       setsTable: { marginBottom: 10 },
