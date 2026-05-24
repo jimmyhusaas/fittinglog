@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="訓練紀錄" />
+  <title>訓練紀錄</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;600;700;900&display=swap" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0f0f0f;
+      color: #f0f0f0;
+      font-family: 'Noto Sans TC', 'PingFang TC', sans-serif;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    input[type=number]::-webkit-inner-spin-button,
+    input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
+    input[type=number] { -moz-appearance: textfield; }
+    button { font-family: inherit; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const STORAGE_KEY = "training-log-v1";
+    const PRESET_EXERCISES = [
+      "臥推","深蹲","硬舉","肩推","划船",
+      "引體向上","腿推","二頭彎舉","三頭下壓","飛鳥",
+      "腿彎舉","腿伸展","側平舉","面拉","保加利亞分腿蹲"
+    ];
+
+    const formatDate = (d) => {
+      const date = new Date(d + "T00:00:00");
+      return `${date.getFullYear()}/${String(date.getMonth()+1).padStart(2,"0")}/${String(date.getDate()).padStart(2,"0")}`;
+    };
+    const todayStr = () => new Date().toISOString().split("T")[0];
+
+    const loadLogs = () => {
+      try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; }
+      catch { return []; }
+    };
+    const saveLogs = (logs) => {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(logs));
+    };
+
+    // ─── App ───────────────────────────────────────────────────────────────
+    function App() {
+      const [logs, setLogs] = useState(loadLogs);
+      const [view, setView] = useState("today");
+      const [selectedDate, setSelectedDate] = useState(todayStr());
+      const [newExercise, setNewExercise] = useState("");
+      const [showPresets, setShowPresets] = useState(false);
+      const [editingSet, setEditingSet] = useState(null);
+      const [toast, setToast] = useState("");
+
+      const save = (newLogs) => { setLogs(newLogs); saveLogs(newLogs); };
+
+      const showToast = (msg) => {
+        setToast(msg);
+        setTimeout(() => setToast(""), 1800);
+      };
+
+      const getSession = (date = selectedDate) => logs.find(l => l.date === date) || null;
+
+      const handleAddExercise = (name) => {
+        if (!name.trim()) return;
+        const existing = logs.find(l => l.date === selectedDate);
+        let newLogs;
+        if (existing) {
+          if (existing.exercises.find(e => e.name === name.trim())) {
+            showToast("已有此動作"); return;
+          }
+          newLogs = logs.map(l =>
+            l.date === selectedDate
+              ? { ...l, exercises: [...l.exercises, { name: name.trim(), sets: [] }] }
+              : l
+          );
+        } else {
+          newLogs = [{ date: selectedDate, exercises: [{ name: name.trim(), sets: [] }] }, ...logs];
+        }
+        save(newLogs);
+        setNewExercise("");
+        setShowPresets(false);
+        showToast(`已新增 ${name.trim()}`);
+      };
+
+      const addSet = (exIdx) => {
+        const session = getSession();
+        if (!session) return;
+        const ex = session.exercises[exIdx];
+        const lastSet = ex.sets[ex.sets.length - 1];
+        const newSet = lastSet ? { weight: lastSet.weight, reps: lastSet.reps } : { weight: "", reps: "" };
+        const newLogs = logs.map(l =>
+          l.date === selectedDate
+            ? { ...l, exercises: l.exercises.map((e, i) =>
+                i === exIdx ? { ...e, sets: [...e.sets, newSet] } : e
+              )}
+            : l
+        );
+        save(newLogs);
+        setEditingSet({ exIdx, setIdx: session.exercises[exIdx].sets.length });
+      };
+
+      const updateSet = (exIdx, setIdx, field, value) => {
+        save(logs.map(l =>
+          l.date === selectedDate
+            ? { ...l, exercises: l.exercises.map((e, i) =>
+                i === exIdx
+                  ? { ...e, sets: e.sets.map((s, j) => j === setIdx ? { ...s, [field]: value } : s) }
+                  : e
+              )}
+            : l
+        ));
+      };
+
+      const deleteSet = (exIdx, setIdx) => {
+        save(logs.map(l =>
+          l.date === selectedDate
+            ? { ...l, exercises: l.exercises.map((e, i) =>
+                i === exIdx ? { ...e, sets: e.sets.filter((_, j) => j !== setIdx) } : e
+              )}
+            : l
+        ));
+        setEditingSet(null);
+      };
+
+      const deleteExercise = (exIdx) => {
+        save(logs.map(l =>
+          l.date === selectedDate
+            ? { ...l, exercises: l.exercises.filter((_, i) => i !== exIdx) }
+            : l
+        ));
+      };
+
+      const session = getSession();
+
+      return (
+        <div style={S.root}>
+          {toast && <div style={S.toast}>{toast}</div>}
+
+          <header style={S.header}>
+            <div style={S.headerInner}>
+              <span style={S.logo}>鐵</span>
+              <h1 style={S.title}>訓練紀錄</h1>
+            </div>
+            <nav style={S.nav}>
+              {["today","history"].map(v => (
+                <button key={v}
+                  style={{...S.navBtn, ...(view===v ? S.navBtnActive : {})}}
+                  onClick={() => { setView(v); if(v==="today") setSelectedDate(todayStr()); }}>
+                  {v === "today" ? "今日" : "歷史"}
+                </button>
+              ))}
+            </nav>
+          </header>
+
+          <main style={S.main}>
+            {view === "today" && (
+              <TodayView
+                session={session}
+                selectedDate={selectedDate}
+                newExercise={newExercise}
+                setNewExercise={setNewExercise}
+                showPresets={showPresets}
+                setShowPresets={setShowPresets}
+                handleAddExercise={handleAddExercise}
+                addSet={addSet}
+                updateSet={updateSet}
+                deleteSet={deleteSet}
+                deleteExercise={deleteExercise}
+                editingSet={editingSet}
+                setEditingSet={setEditingSet}
+              />
+            )}
+            {view === "history" && (
+              <HistoryView
+                logs={logs}
+                onSelect={(date) => { setSelectedDate(date); setView("today"); }}
+              />
+            )}
+          </main>
+        </div>
+      );
+    }
+
+    // ─── TodayView ─────────────────────────────────────────────────────────
+    function TodayView({ session, selectedDate, newExercise, setNewExercise,
+      showPresets, setShowPresets, handleAddExercise, addSet,
+      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet }) {
+
+      const totalVolume = session
+        ? session.exercises.reduce((sum, ex) =>
+            sum + ex.sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0), 0)
+        : 0;
+
+      return (
+        <div>
+          <div style={S.dateBar}>
+            <span style={S.dateText}>{formatDate(selectedDate)}</span>
+            {totalVolume > 0 && <span style={S.volumeBadge}>總量 {totalVolume.toLocaleString()} kg</span>}
+          </div>
+
+          {session && session.exercises.length > 0
+            ? session.exercises.map((ex, exIdx) => (
+                <ExerciseCard key={exIdx} ex={ex} exIdx={exIdx}
+                  addSet={addSet} updateSet={updateSet}
+                  deleteSet={deleteSet} deleteExercise={deleteExercise}
+                  editingSet={editingSet} setEditingSet={setEditingSet} />
+              ))
+            : (
+              <div style={S.emptyState}>
+                <div style={S.emptyIcon}>💪</div>
+                <p style={S.emptyText}>今日尚無訓練紀錄</p>
+                <p style={S.emptyHint}>新增第一個動作開始</p>
+              </div>
+            )
+          }
+
+          <div style={S.addExSection}>
+            <div style={S.addExRow}>
+              <input
+                style={S.input}
+                placeholder="輸入動作名稱"
+                value={newExercise}
+                onChange={e => setNewExercise(e.target.value)}
+                onKeyDown={e => e.key === "Enter" && handleAddExercise(newExercise)}
+              />
+              <button style={S.addBtn} onClick={() => handleAddExercise(newExercise)}>新增</button>
+              <button style={{...S.addBtn, ...S.presetBtn}} onClick={() => setShowPresets(!showPresets)}>常用</button>
+            </div>
+            {showPresets && (
+              <div style={S.presets}>
+                {PRESET_EXERCISES.map(p => (
+                  <button key={p} style={S.presetChip} onClick={() => handleAddExercise(p)}>{p}</button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ─── ExerciseCard ──────────────────────────────────────────────────────
+    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet }) {
+      const maxWeight = ex.sets.length > 0 ? Math.max(...ex.sets.map(s => parseFloat(s.weight)||0)) : 0;
+
+      return (
+        <div style={S.card}>
+          <div style={S.cardHeader}>
+            <div>
+              <h3 style={S.exName}>{ex.name}</h3>
+              <span style={S.exMeta}>{ex.sets.length} 組{maxWeight > 0 && ` · 最高 ${maxWeight}kg`}</span>
+            </div>
+            <button style={S.deleteExBtn} onClick={() => deleteExercise(exIdx)}>✕</button>
+          </div>
+
+          {ex.sets.length > 0 && (
+            <div style={S.setsTable}>
+              <div style={S.setsHeader}>
+                <span style={S.setCol}>組</span>
+                <span style={S.setCol}>重量 (kg)</span>
+                <span style={S.setCol}>次數</span>
+                <span style={{width:28}}></span>
+              </div>
+              {ex.sets.map((set, setIdx) => {
+                const isEditing = editingSet?.exIdx === exIdx && editingSet?.setIdx === setIdx;
+                return (
+                  <div key={setIdx} style={S.setRow} onClick={() => setEditingSet({exIdx, setIdx})}>
+                    <span style={{...S.setCol, ...S.setNum}}>{setIdx+1}</span>
+                    {isEditing ? (
+                      <>
+                        <input style={S.setInput} type="number" value={set.weight} placeholder="0"
+                          onChange={e => updateSet(exIdx, setIdx, "weight", e.target.value)}
+                          onClick={e => e.stopPropagation()} />
+                        <input style={S.setInput} type="number" value={set.reps} placeholder="0"
+                          onChange={e => updateSet(exIdx, setIdx, "reps", e.target.value)}
+                          onClick={e => e.stopPropagation()} />
+                      </>
+                    ) : (
+                      <>
+                        <span style={S.setCol}>{set.weight || "—"}</span>
+                        <span style={S.setCol}>{set.reps || "—"}</span>
+                      </>
+                    )}
+                    <button style={S.deleteSetBtn}
+                      onClick={e => { e.stopPropagation(); deleteSet(exIdx, setIdx); }}>✕</button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          <button style={S.addSetBtn} onClick={() => addSet(exIdx)}>＋ 新增組數</button>
+        </div>
+      );
+    }
+
+    // ─── HistoryView ───────────────────────────────────────────────────────
+    function HistoryView({ logs, onSelect }) {
+      if (logs.length === 0) return (
+        <div style={S.emptyState}>
+          <div style={S.emptyIcon}>📋</div>
+          <p style={S.emptyText}>尚無歷史紀錄</p>
+        </div>
+      );
+      return (
+        <div>
+          <p style={S.historyHint}>點擊日期可查看或編輯</p>
+          {logs.map(l => {
+            const totalSets = l.exercises.reduce((s, e) => s + e.sets.length, 0);
+            const volume = l.exercises.reduce((sum, ex) =>
+              sum + ex.sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0), 0);
+            return (
+              <div key={l.date} style={S.historyCard} onClick={() => onSelect(l.date)}>
+                <div style={S.historyDate}>{formatDate(l.date)}</div>
+                <div style={S.historyMeta}>
+                  <span>{l.exercises.length} 個動作</span>
+                  <span style={S.dot}>·</span>
+                  <span>{totalSets} 組</span>
+                  {volume > 0 && <><span style={S.dot}>·</span><span>{volume.toLocaleString()} kg</span></>}
+                </div>
+                <div style={S.historyExList}>{l.exercises.map(e => e.name).join("、")}</div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ─── Styles ────────────────────────────────────────────────────────────
+    const C = {
+      bg: "#0f0f0f", surface: "#1a1a1a", surfaceHigh: "#242424",
+      border: "#2e2e2e", accent: "#e8ff47", text: "#f0f0f0",
+      textMuted: "#888", red: "#ff4f4f", radius: "10px",
+    };
+    const S = {
+      root: { background: C.bg, minHeight: "100vh", color: C.text, maxWidth: 480, margin: "0 auto", paddingBottom: 80 },
+      header: { background: C.surface, borderBottom: `1px solid ${C.border}`, padding: "0 16px", position: "sticky", top: 0, zIndex: 100 },
+      headerInner: { display: "flex", alignItems: "center", gap: 10, padding: "14px 0 8px" },
+      logo: { background: C.accent, color: "#000", fontWeight: 900, fontSize: 18, width: 32, height: 32, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" },
+      title: { margin: 0, fontSize: 18, fontWeight: 700, letterSpacing: 2 },
+      nav: { display: "flex", gap: 4, paddingBottom: 10 },
+      navBtn: { background: "none", border: "none", color: C.textMuted, fontSize: 14, padding: "6px 14px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit" },
+      navBtnActive: { background: C.accent, color: "#000", fontWeight: 700 },
+      main: { padding: "16px 16px 0" },
+      dateBar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
+      dateText: { fontSize: 22, fontWeight: 800, letterSpacing: 1 },
+      volumeBadge: { background: C.surfaceHigh, color: C.accent, fontSize: 12, padding: "4px 10px", borderRadius: 20, fontWeight: 600 },
+      emptyState: { textAlign: "center", padding: "60px 20px", color: C.textMuted },
+      emptyIcon: { fontSize: 48, marginBottom: 12 },
+      emptyText: { fontSize: 16, fontWeight: 600, margin: "0 0 6px" },
+      emptyHint: { fontSize: 13, margin: 0, opacity: 0.6 },
+      card: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 16, marginBottom: 12 },
+      cardHeader: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 },
+      exName: { margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: 0.5 },
+      exMeta: { fontSize: 12, color: C.textMuted, marginTop: 2, display: "block" },
+      deleteExBtn: { background: "none", border: "none", color: C.textMuted, fontSize: 14, cursor: "pointer", padding: "2px 6px", borderRadius: 4 },
+      setsTable: { marginBottom: 10 },
+      setsHeader: { display: "flex", alignItems: "center", padding: "4px 0", borderBottom: `1px solid ${C.border}`, marginBottom: 4, fontSize: 11, color: C.textMuted, letterSpacing: 1 },
+      setRow: { display: "flex", alignItems: "center", padding: "6px 0", borderBottom: `1px solid ${C.border}`, cursor: "pointer" },
+      setCol: { flex: 1, fontSize: 14 },
+      setNum: { color: C.accent, fontWeight: 700 },
+      setInput: { flex: 1, background: C.surfaceHigh, border: `1px solid ${C.accent}`, borderRadius: 6, color: C.text, fontSize: 14, padding: "4px 8px", marginRight: 6, fontFamily: "inherit", width: 0, outline: "none" },
+      deleteSetBtn: { background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", padding: "2px 4px", width: 28, flexShrink: 0 },
+      addSetBtn: { background: "none", border: `1px dashed ${C.border}`, color: C.textMuted, borderRadius: 8, padding: "8px 0", width: "100%", cursor: "pointer", fontSize: 13, fontFamily: "inherit" },
+      addExSection: { marginTop: 8 },
+      addExRow: { display: "flex", gap: 8 },
+      input: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, color: C.text, fontSize: 14, padding: "10px 14px", fontFamily: "inherit", outline: "none" },
+      addBtn: { background: C.accent, border: "none", borderRadius: C.radius, color: "#000", fontWeight: 700, fontSize: 13, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" },
+      presetBtn: { background: C.surfaceHigh, color: C.text, fontWeight: 500 },
+      presets: { display: "flex", flexWrap: "wrap", gap: 8, marginTop: 12, padding: 12, background: C.surface, borderRadius: C.radius, border: `1px solid ${C.border}` },
+      presetChip: { background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 20, color: C.text, fontSize: 13, padding: "6px 14px", cursor: "pointer", fontFamily: "inherit" },
+      historyHint: { fontSize: 12, color: C.textMuted, marginBottom: 12 },
+      historyCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 14, marginBottom: 10, cursor: "pointer" },
+      historyDate: { fontSize: 16, fontWeight: 700, marginBottom: 4 },
+      historyMeta: { fontSize: 13, color: C.textMuted, marginBottom: 6, display: "flex", gap: 6, alignItems: "center" },
+      dot: { opacity: 0.4 },
+      historyExList: { fontSize: 12, color: C.textMuted, opacity: 0.7 },
+      toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: C.accent, color: "#000", fontWeight: 700, fontSize: 13, padding: "10px 20px", borderRadius: 20, zIndex: 999, pointerEvents: "none", whiteSpace: "nowrap" },
+    };
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
