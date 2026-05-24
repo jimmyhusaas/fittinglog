@@ -13,6 +13,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -26,6 +27,7 @@
     input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
     input[type=number] { -moz-appearance: textfield; }
     button { font-family: inherit; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   </style>
 </head>
 <body>
@@ -33,6 +35,15 @@
 
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
+
+    // ─── Supabase config ───────────────────────────────────────────────────
+    // Fill these in from Supabase Dashboard → Settings → API.
+    // Leaving them blank keeps the app in local-only mode (no cloud sync).
+    // See SETUP.md for the 5-min walkthrough + SQL schema.
+    const SUPABASE_URL = "";
+    const SUPABASE_ANON_KEY = "";
+    const CLOUD_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase);
+    const sb = CLOUD_ENABLED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
     const STORAGE_KEY = "training-log-v1";
     const PRESET_EXERCISES = [
@@ -64,12 +75,117 @@
       const [showPresets, setShowPresets] = useState(false);
       const [editingSet, setEditingSet] = useState(null);
       const [toast, setToast] = useState("");
-
-      const save = (newLogs) => { setLogs(newLogs); saveLogs(newLogs); };
+      const [user, setUser] = useState(null);
+      const [authReady, setAuthReady] = useState(!CLOUD_ENABLED);
+      const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | error | offline
 
       const showToast = (msg) => {
         setToast(msg);
         setTimeout(() => setToast(""), 1800);
+      };
+
+      // Push specific dates to Supabase; deleted dates are sent as cloud deletes.
+      const syncDatesToCloud = async (newLogs, dates) => {
+        if (!CLOUD_ENABLED || !user || !dates?.length) return;
+        setSyncStatus("syncing");
+        try {
+          const toUpsert = [];
+          const toDelete = [];
+          const byDate = new Map(newLogs.map(l => [l.date, l]));
+          for (const d of dates) {
+            const session = byDate.get(d);
+            if (session) toUpsert.push({ date: d, exercises: session.exercises });
+            else toDelete.push(d);
+          }
+          if (toUpsert.length) {
+            const { error } = await sb.from("sessions").upsert(toUpsert, { onConflict: "user_id,date" });
+            if (error) throw error;
+          }
+          if (toDelete.length) {
+            const { error } = await sb.from("sessions").delete().in("date", toDelete);
+            if (error) throw error;
+          }
+          setSyncStatus("idle");
+        } catch (err) {
+          setSyncStatus("error");
+          console.warn("Cloud sync failed:", err);
+        }
+      };
+
+      const save = (newLogs, affectedDates) => {
+        setLogs(newLogs);
+        saveLogs(newLogs);
+        if (affectedDates) syncDatesToCloud(newLogs, affectedDates);
+      };
+
+      // Auth state subscription
+      useEffect(() => {
+        if (!CLOUD_ENABLED) return;
+        sb.auth.getSession().then(({ data }) => {
+          setUser(data.session?.user || null);
+          setAuthReady(true);
+        });
+        const { data: { subscription } } = sb.auth.onAuthStateChange((_event, session) => {
+          setUser(session?.user || null);
+          setAuthReady(true);
+        });
+        return () => subscription.unsubscribe();
+      }, []);
+
+      // Pull cloud data on login, merge with local (cloud wins on conflict)
+      useEffect(() => {
+        if (!user) return;
+        let cancelled = false;
+        setSyncStatus("syncing");
+        sb.from("sessions").select("date, exercises").then(({ data, error }) => {
+          if (cancelled) return;
+          if (error) {
+            setSyncStatus("error");
+            showToast("雲端讀取失敗：" + error.message);
+            return;
+          }
+          const cloudByDate = new Map(data.map(r => [r.date, r.exercises]));
+          const localByDate = new Map(logs.map(l => [l.date, l.exercises]));
+          const allDates = new Set([...cloudByDate.keys(), ...localByDate.keys()]);
+          const merged = [];
+          const localOnlyDates = [];
+          for (const d of allDates) {
+            if (cloudByDate.has(d)) {
+              merged.push({ date: d, exercises: cloudByDate.get(d) });
+            } else {
+              merged.push({ date: d, exercises: localByDate.get(d) });
+              localOnlyDates.push(d);
+            }
+          }
+          merged.sort((a, b) => b.date.localeCompare(a.date));
+          setLogs(merged);
+          saveLogs(merged);
+          // Push any local-only dates up to cloud so they're not stranded
+          if (localOnlyDates.length) {
+            syncDatesToCloud(merged, localOnlyDates);
+          } else {
+            setSyncStatus("idle");
+          }
+          if (data.length || localOnlyDates.length) {
+            showToast(`已同步：雲端 ${data.length} 筆 / 本地新推 ${localOnlyDates.length} 筆`);
+          }
+        });
+        return () => { cancelled = true; };
+      }, [user?.id]);
+
+      const sendMagicLink = async (email) => {
+        const { error } = await sb.auth.signInWithOtp({
+          email,
+          options: { emailRedirectTo: window.location.origin + window.location.pathname },
+        });
+        if (error) { showToast("寄信失敗：" + error.message); return false; }
+        return true;
+      };
+
+      const logout = async () => {
+        await sb.auth.signOut();
+        setUser(null);
+        showToast("已登出");
       };
 
       const getSession = (date = selectedDate) => logs.find(l => l.date === date) || null;
@@ -90,7 +206,7 @@
         } else {
           newLogs = [{ date: selectedDate, exercises: [{ name: name.trim(), sets: [] }] }, ...logs];
         }
-        save(newLogs);
+        save(newLogs, [selectedDate]);
         setNewExercise("");
         setShowPresets(false);
         showToast(`已新增 ${name.trim()}`);
@@ -109,7 +225,7 @@
               )}
             : l
         );
-        save(newLogs);
+        save(newLogs, [selectedDate]);
         setEditingSet({ exIdx, setIdx: session.exercises[exIdx].sets.length });
       };
 
@@ -122,7 +238,7 @@
                   : e
               )}
             : l
-        ));
+        ), [selectedDate]);
       };
 
       const deleteSet = (exIdx, setIdx) => {
@@ -132,7 +248,7 @@
                 i === exIdx ? { ...e, sets: e.sets.filter((_, j) => j !== setIdx) } : e
               )}
             : l
-        ));
+        ), [selectedDate]);
         setEditingSet(null);
       };
 
@@ -141,7 +257,7 @@
           l.date === selectedDate
             ? { ...l, exercises: l.exercises.filter((_, i) => i !== exIdx) }
             : l
-        ));
+        ), [selectedDate]);
       };
 
       const exportData = () => {
@@ -173,21 +289,38 @@
             const existingDates = new Set(logs.map(l => l.date));
             const newOnes = data.filter(d => !existingDates.has(d.date));
             const merged = [...newOnes, ...logs].sort((a, b) => b.date.localeCompare(a.date));
-            save(merged);
+            save(merged, newOnes.map(d => d.date));
             const skipped = data.length - newOnes.length;
             showToast(
-              skipped > 0
+              newOnes.length === 0
+                ? `全部 ${data.length} 筆日期都已存在，未匯入`
+                : skipped > 0
                 ? `已合併 ${newOnes.length} 筆（跳過 ${skipped} 筆已存在）`
                 : `已匯入 ${newOnes.length} 筆紀錄`
             );
           } catch (err) {
-            showToast("匯入失敗：" + err.message);
+            console.warn("Import error:", err);
+            const friendly = err.message.startsWith("檔案") || err.message.startsWith("資料")
+              ? err.message
+              : "JSON 格式錯誤";
+            showToast("匯入失敗：" + friendly);
           }
         };
         reader.readAsText(file);
       };
 
       const session = getSession();
+
+      if (CLOUD_ENABLED && !authReady) {
+        return <div style={S.root}><div style={S.emptyState}><p style={S.emptyText}>載入中…</p></div></div>;
+      }
+      if (CLOUD_ENABLED && !user) {
+        return <LoginView onSend={sendMagicLink} toast={toast} />;
+      }
+
+      const syncLabel = syncStatus === "syncing" ? "同步中…"
+        : syncStatus === "error" ? "同步失敗"
+        : null;
 
       return (
         <div style={S.root}>
@@ -197,6 +330,16 @@
             <div style={S.headerInner}>
               <span style={S.logo}>鐵</span>
               <h1 style={S.title}>訓練紀錄</h1>
+              {user && (
+                <div style={S.userBadge}>
+                  {syncLabel && <span style={{...S.syncDot, ...(syncStatus === "error" ? S.syncDotError : S.syncDotSyncing)}} title={syncLabel} />}
+                  <span style={S.userEmail}>{user.email}</span>
+                  <button style={S.logoutBtn} onClick={logout}>登出</button>
+                </div>
+              )}
+              {!CLOUD_ENABLED && (
+                <span style={S.localOnlyBadge} title="未設定 Supabase，僅本機儲存">本機</span>
+              )}
             </div>
             <nav style={S.nav}>
               {["today","history"].map(v => (
@@ -235,6 +378,62 @@
                 onImport={importData}
               />
             )}
+          </main>
+        </div>
+      );
+    }
+
+    // ─── LoginView ─────────────────────────────────────────────────────────
+    function LoginView({ onSend, toast }) {
+      const [email, setEmail] = useState("");
+      const [sent, setSent] = useState(false);
+      const [sending, setSending] = useState(false);
+
+      const submit = async (e) => {
+        e.preventDefault();
+        if (!email.trim() || sending) return;
+        setSending(true);
+        const ok = await onSend(email.trim());
+        setSending(false);
+        if (ok) setSent(true);
+      };
+
+      return (
+        <div style={S.root}>
+          {toast && <div style={S.toast}>{toast}</div>}
+          <header style={S.header}>
+            <div style={S.headerInner}>
+              <span style={S.logo}>鐵</span>
+              <h1 style={S.title}>訓練紀錄</h1>
+            </div>
+          </header>
+          <main style={S.main}>
+            <div style={S.loginCard}>
+              {sent ? (
+                <>
+                  <h2 style={S.loginTitle}>已寄出登入信</h2>
+                  <p style={S.loginHint}>請到 <strong>{email}</strong> 收信，點擊連結登入。</p>
+                  <button style={S.loginLinkBtn} onClick={() => setSent(false)}>換個 Email</button>
+                </>
+              ) : (
+                <form onSubmit={submit}>
+                  <h2 style={S.loginTitle}>登入以同步訓練紀錄</h2>
+                  <p style={S.loginHint}>輸入 Email，會寄一封登入連結信給你（不需要密碼）。</p>
+                  <input
+                    type="email"
+                    required
+                    style={S.loginInput}
+                    placeholder="you@example.com"
+                    value={email}
+                    onChange={e => setEmail(e.target.value)}
+                    autoFocus
+                  />
+                  <button type="submit" style={S.loginBtn} disabled={sending}>
+                    {sending ? "寄送中…" : "寄送登入連結"}
+                  </button>
+                </form>
+              )}
+            </div>
           </main>
         </div>
       );
@@ -464,6 +663,19 @@
       backupBtn: { flex: 1, background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: C.radius, color: C.text, fontSize: 13, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 },
       backupBtnDisabled: { opacity: 0.4, cursor: "not-allowed" },
       backupHint: { fontSize: 11, color: C.textMuted, opacity: 0.7, margin: 0, lineHeight: 1.4 },
+      userBadge: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 },
+      userEmail: { fontSize: 11, color: C.textMuted, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      logoutBtn: { background: "none", border: `1px solid ${C.border}`, color: C.textMuted, fontSize: 11, padding: "4px 10px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit" },
+      syncDot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
+      syncDotSyncing: { background: C.accent, animation: "pulse 1s infinite" },
+      syncDotError: { background: C.red },
+      localOnlyBadge: { marginLeft: "auto", background: C.surfaceHigh, color: C.textMuted, fontSize: 10, padding: "3px 8px", borderRadius: 10, fontWeight: 600, letterSpacing: 1 },
+      loginCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 24, marginTop: 32 },
+      loginTitle: { fontSize: 18, fontWeight: 700, margin: "0 0 8px" },
+      loginHint: { fontSize: 13, color: C.textMuted, lineHeight: 1.5, margin: "0 0 18px" },
+      loginInput: { width: "100%", background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: C.radius, color: C.text, fontSize: 14, padding: "12px 14px", fontFamily: "inherit", outline: "none", marginBottom: 12 },
+      loginBtn: { width: "100%", background: C.accent, border: "none", borderRadius: C.radius, color: "#000", fontWeight: 700, fontSize: 14, padding: "12px", cursor: "pointer", fontFamily: "inherit" },
+      loginLinkBtn: { background: "none", border: "none", color: C.accent, fontSize: 13, cursor: "pointer", fontFamily: "inherit", padding: 0, textDecoration: "underline" },
       historyCard: { background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, padding: 14, marginBottom: 10, cursor: "pointer" },
       historyDate: { fontSize: 16, fontWeight: 700, marginBottom: 4 },
       historyMeta: { fontSize: 13, color: C.textMuted, marginBottom: 6, display: "flex", gap: 6, alignItems: "center" },
