@@ -47,6 +47,8 @@
 
     const STORAGE_KEY = "training-log-v1";
     const CATALOG_KEY = "exercise-catalog-v1";
+    const QUEUE_KEY = "sync-queue-v1";
+    const LAST_SYNC_KEY = "last-synced-at-v1";
 
     // Seed metadata for the preset exercises. Anything added at runtime
     // gets stub metadata (group="其他", equipment=null) until user edits.
@@ -134,6 +136,35 @@
       localStorage.setItem(CATALOG_KEY, JSON.stringify(cat));
     };
 
+    // Sync queue: dates whose cloud push has failed and are awaiting retry.
+    // Stored as an array of date strings; deduped on add.
+    const loadQueue = () => {
+      try { return JSON.parse(localStorage.getItem(QUEUE_KEY)) || []; }
+      catch { return []; }
+    };
+    const saveQueue = (arr) => localStorage.setItem(QUEUE_KEY, JSON.stringify(arr));
+    const queueAdd = (dates) => {
+      const set = new Set(loadQueue());
+      for (const d of dates) set.add(d);
+      saveQueue([...set]);
+    };
+
+    const loadLastSyncedAt = () => {
+      const v = localStorage.getItem(LAST_SYNC_KEY);
+      return v ? new Date(v) : null;
+    };
+    const saveLastSyncedAt = (d) => localStorage.setItem(LAST_SYNC_KEY, d.toISOString());
+
+    const formatRelative = (date, nowMs) => {
+      if (!date) return "尚未同步";
+      const diff = nowMs - date.getTime();
+      if (diff < 0) return "剛剛同步";
+      if (diff < 60_000) return "剛剛同步";
+      if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分前同步`;
+      if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小時前同步`;
+      return `${Math.floor(diff / 86_400_000)} 天前同步`;
+    };
+
     // Build initial catalog: presets + any names observed in existing
     // sessions get a stub entry so they show up in the catalog even
     // before user has edited metadata.
@@ -165,7 +196,22 @@
       const [toast, setToast] = useState("");
       const [user, setUser] = useState(null);
       const [authReady, setAuthReady] = useState(!CLOUD_ENABLED);
-      const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | error | offline
+      const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | error
+      const [lastSyncedAt, setLastSyncedAt] = useState(loadLastSyncedAt);
+      const [pendingCount, setPendingCount] = useState(() => loadQueue().length);
+      const [nowMs, setNowMs] = useState(Date.now());
+
+      // Refs so the online-event handler always sees the latest logs and
+      // sync function without re-binding the listener on every render.
+      const logsRef = useRef(logs);
+      useEffect(() => { logsRef.current = logs; }, [logs]);
+      const syncRef = useRef();
+
+      // Tick every 30s so the "X 分前同步" text stays fresh.
+      useEffect(() => {
+        const id = setInterval(() => setNowMs(Date.now()), 30_000);
+        return () => clearInterval(id);
+      }, []);
 
       const ensureInCatalog = (name) => {
         if (catalog[name]) return;
@@ -187,15 +233,20 @@
         setTimeout(() => setToast(""), 1800);
       };
 
-      // Push specific dates to Supabase; deleted dates are sent as cloud deletes.
+      // Push specific dates to Supabase, plus any previously-queued dates
+      // awaiting retry. On failure, all attempted dates go (back) into the
+      // queue so the next sync attempt will retry them. Idempotent — safe
+      // to call with empty dates to just flush the queue.
       const syncDatesToCloud = async (newLogs, dates) => {
-        if (!CLOUD_ENABLED || !user || !dates?.length) return;
+        if (!CLOUD_ENABLED || !user) return;
+        const allDates = [...new Set([...(dates || []), ...loadQueue()])];
+        if (allDates.length === 0) return;
         setSyncStatus("syncing");
         try {
           const toUpsert = [];
           const toDelete = [];
           const byDate = new Map(newLogs.map(l => [l.date, l]));
-          for (const d of dates) {
+          for (const d of allDates) {
             const session = byDate.get(d);
             if (session) toUpsert.push({ date: d, exercises: session.exercises });
             else toDelete.push(d);
@@ -208,12 +259,30 @@
             const { error } = await sb.from("sessions").delete().in("date", toDelete);
             if (error) throw error;
           }
+          saveQueue([]);
+          setPendingCount(0);
+          const now = new Date();
+          setLastSyncedAt(now);
+          saveLastSyncedAt(now);
           setSyncStatus("idle");
         } catch (err) {
+          queueAdd(allDates);
+          setPendingCount(loadQueue().length);
           setSyncStatus("error");
-          console.warn("Cloud sync failed:", err);
+          console.warn("Cloud sync failed, queued for retry:", err);
         }
       };
+      syncRef.current = syncDatesToCloud;
+
+      // Retry queued pushes when the browser regains connectivity.
+      useEffect(() => {
+        if (!CLOUD_ENABLED || !user) return;
+        const onOnline = () => {
+          if (loadQueue().length) syncRef.current?.(logsRef.current, []);
+        };
+        window.addEventListener("online", onOnline);
+        return () => window.removeEventListener("online", onOnline);
+      }, [user?.id]);
 
       const save = (newLogs, affectedDates) => {
         setLogs(newLogs);
@@ -457,9 +526,12 @@
         return <LoginView onSend={sendMagicLink} toast={toast} />;
       }
 
-      const syncLabel = syncStatus === "syncing" ? "同步中…"
-        : syncStatus === "error" ? "同步失敗"
-        : null;
+      const dotStyle = syncStatus === "syncing" ? S.syncDotSyncing
+        : syncStatus === "error" ? S.syncDotError
+        : S.syncDotIdle;
+      const syncText = syncStatus === "syncing" ? "同步中…"
+        : syncStatus === "error" ? `離線（${pendingCount} 筆待同步）`
+        : formatRelative(lastSyncedAt, nowMs);
 
       return (
         <div style={S.root}>
@@ -471,8 +543,15 @@
               <h1 style={S.title}>訓練紀錄</h1>
               {user && (
                 <div style={S.userBadge}>
-                  {syncLabel && <span style={{...S.syncDot, ...(syncStatus === "error" ? S.syncDotError : S.syncDotSyncing)}} title={syncLabel} />}
-                  <span style={S.userEmail}>{user.email}</span>
+                  <div style={S.syncStatus} title={user.email}>
+                    <span style={{...S.syncDot, ...dotStyle}} />
+                    <span style={S.syncText}>{syncText}</span>
+                    {syncStatus === "error" && (
+                      <button style={S.retryBtn}
+                        onClick={() => syncRef.current?.(logsRef.current, [])}
+                        title="重試">↻</button>
+                    )}
+                  </div>
                   <button style={S.logoutBtn} onClick={logout}>登出</button>
                 </div>
               )}
@@ -924,7 +1003,11 @@
       userBadge: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 },
       userEmail: { fontSize: 11, color: C.textMuted, maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
       logoutBtn: { background: "none", border: `1px solid ${C.border}`, color: C.textMuted, fontSize: 11, padding: "4px 10px", borderRadius: 12, cursor: "pointer", fontFamily: "inherit" },
-      syncDot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
+      syncStatus: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.textMuted },
+      syncText: { whiteSpace: "nowrap" },
+      retryBtn: { background: "none", border: `1px solid ${C.red}`, color: C.red, fontSize: 11, width: 20, height: 20, borderRadius: "50%", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", padding: 0 },
+      syncDot: { width: 8, height: 8, borderRadius: "50%", display: "inline-block", flexShrink: 0 },
+      syncDotIdle: { background: "#4caf50" },
       syncDotSyncing: { background: C.accent, animation: "pulse 1s infinite" },
       syncDotError: { background: C.red },
       localOnlyBadge: { marginLeft: "auto", background: C.surfaceHigh, color: C.textMuted, fontSize: 10, padding: "3px 8px", borderRadius: 10, fontWeight: 600, letterSpacing: 1 },
