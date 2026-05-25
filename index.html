@@ -86,6 +86,8 @@
       { name: "腿彎舉",        group: "腿", equipment: "machine",  weightRecording: "total"  },
       { name: "腿伸展",        group: "腿", equipment: "machine",  weightRecording: "total"  },
       { name: "保加利亞分腿蹲", group: "腿", equipment: "dumbbell", weightRecording: "single" },
+      // 有氧（每次重訓後）— 坡度快走用三欄記錄
+      { name: "坡度快走",      group: "有氧", equipment: "treadmill", weightRecording: "n/a", recordingFormat: "cardio_incline" },
     ];
     const PRESET_EXERCISES = PRESET_CATALOG.map(e => e.name);
 
@@ -95,7 +97,39 @@
       { label: "Day 2 · 背 + 二頭", exercises: ["滑輪下拉", "坐姿划船", "Pull over", "二頭彎舉", "錘式彎舉"] },
       { label: "Day 3 · 肩",        exercises: ["啞鈴肩推", "側平舉", "單手繩索反向飛鳥"] },
       { label: "Day 4 · 腿",        exercises: ["深蹲", "腿舉", "啞鈴硬舉", "坐姿腿彎舉"] },
+      { label: "有氧（每次重訓後）", exercises: ["坡度快走"] },
     ];
+
+    // Recording-format schemas. Each exercise's catalog entry carries a
+    // recordingFormat key whose value picks one of these. The UI uses
+    // .columns to render the set-row inputs and .summary/.volume to
+    // compute the per-exercise blurb and total day volume.
+    const RECORDING_FORMATS = {
+      weight_reps: {
+        columns: [
+          { key: "weight", label: "重量 (kg)", placeholder: "0" },
+          { key: "reps",   label: "次數",       placeholder: "0" },
+        ],
+        summary: (sets) => {
+          const max = sets.length ? Math.max(...sets.map(s => parseFloat(s.weight) || 0)) : 0;
+          return max > 0 ? `最高 ${max}kg` : null;
+        },
+        volume: (sets) => sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0),
+      },
+      cardio_incline: {
+        columns: [
+          { key: "incline",  label: "坡度 %", placeholder: "11" },
+          { key: "duration", label: "分鐘",   placeholder: "25" },
+          { key: "speed",    label: "km/h",   placeholder: "5.5" },
+        ],
+        summary: (sets) => {
+          const total = sets.reduce((s, set) => s + (parseFloat(set.duration) || 0), 0);
+          return total > 0 ? `共 ${total} 分鐘` : null;
+        },
+        volume: () => 0, // cardio doesn't add to the kg-volume total
+      },
+    };
+    const getFormat = (meta) => RECORDING_FORMATS[meta?.recordingFormat || "weight_reps"] || RECORDING_FORMATS.weight_reps;
 
     const WEIGHT_RECORDING_GUIDE = [
       { equipment: "啞鈴（雙手各持一個）", recording: "單手重量" },
@@ -171,11 +205,19 @@
     const seedCatalog = (existingCat, logs) => {
       const next = { ...existingCat };
       for (const p of PRESET_CATALOG) {
-        if (!next[p.name]) next[p.name] = { group: p.group, equipment: p.equipment, weightRecording: p.weightRecording };
+        // Preset entries always re-seed their recordingFormat so a code
+        // change here picks up on next page load even if catalog exists.
+        const existing = next[p.name];
+        next[p.name] = {
+          group: existing?.group ?? p.group,
+          equipment: existing?.equipment ?? p.equipment,
+          weightRecording: existing?.weightRecording ?? p.weightRecording,
+          recordingFormat: p.recordingFormat || "weight_reps",
+        };
       }
       for (const l of logs) {
         for (const ex of l.exercises) {
-          if (!next[ex.name]) next[ex.name] = { group: "其他", equipment: null, weightRecording: "single" };
+          if (!next[ex.name]) next[ex.name] = { group: "其他", equipment: null, weightRecording: "single", recordingFormat: "weight_reps" };
         }
       }
       return next;
@@ -217,13 +259,18 @@
         if (catalog[name]) return;
         const preset = PRESET_CATALOG.find(p => p.name === name);
         const entry = preset
-          ? { group: preset.group, equipment: preset.equipment, weightRecording: preset.weightRecording }
-          : { group: "其他", equipment: null, weightRecording: "single" };
+          ? { group: preset.group, equipment: preset.equipment, weightRecording: preset.weightRecording, recordingFormat: preset.recordingFormat || "weight_reps" }
+          : { group: "其他", equipment: null, weightRecording: "single", recordingFormat: "weight_reps" };
         const next = { ...catalog, [name]: entry };
         setCatalog(next);
         saveCatalog(next);
         if (CLOUD_ENABLED && user) {
-          sb.from("exercises").upsert({ name, ...entry }, { onConflict: "user_id,name" })
+          sb.from("exercises").upsert({
+            name,
+            muscle_group: entry.group,
+            equipment: entry.equipment,
+            weight_recording: entry.weightRecording,
+          }, { onConflict: "user_id,name" })
             .then(({ error }) => { if (error) console.warn("catalog upsert failed:", error); });
         }
       };
@@ -331,9 +378,14 @@
               };
             }
           }
+          // Merge cloud over local for the three synced fields, but
+          // preserve recordingFormat from local (cloud schema doesn't have it).
           const mergedCat = { ...catalog };
           for (const [name, entry] of Object.entries(cloudCat)) {
-            mergedCat[name] = entry;
+            const existingFormat = catalog[name]?.recordingFormat
+              || PRESET_CATALOG.find(p => p.name === name)?.recordingFormat
+              || "weight_reps";
+            mergedCat[name] = { ...entry, recordingFormat: existingFormat };
           }
           for (const name of Object.keys(catalog)) {
             if (!(name in cloudCat)) localOnlyCatNames.push(name);
@@ -424,8 +476,11 @@
         const session = getSession();
         if (!session) return;
         const ex = session.exercises[exIdx];
+        const fmt = getFormat(catalog?.[ex.name]);
         const lastSet = ex.sets[ex.sets.length - 1];
-        const newSet = lastSet ? { weight: lastSet.weight, reps: lastSet.reps } : { weight: "", reps: "" };
+        const newSet = lastSet
+          ? Object.fromEntries(fmt.columns.map(c => [c.key, lastSet[c.key] ?? ""]))
+          : Object.fromEntries(fmt.columns.map(c => [c.key, ""]));
         const newLogs = logs.map(l =>
           l.date === selectedDate
             ? { ...l, exercises: l.exercises.map((e, i) =>
@@ -693,9 +748,10 @@
       handleAddExercise, addSet,
       updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog }) {
 
+      // Total volume sums only weight×reps exercises (cardio contributes 0).
       const totalVolume = session
         ? session.exercises.reduce((sum, ex) =>
-            sum + ex.sets.reduce((s, set) => s + (parseFloat(set.weight)||0)*(parseInt(set.reps)||0), 0), 0)
+            sum + getFormat(catalog?.[ex.name]).volume(ex.sets), 0)
         : 0;
 
       const isToday = selectedDate === todayStr();
@@ -807,8 +863,9 @@
 
     // ─── ExerciseCard ──────────────────────────────────────────────────────
     function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta }) {
-      const maxWeight = ex.sets.length > 0 ? Math.max(...ex.sets.map(s => parseFloat(s.weight)||0)) : 0;
+      const fmt = getFormat(meta);
       const groupColor = meta?.group ? (MUSCLE_GROUP_COLORS[meta.group] || MUSCLE_GROUP_COLORS["其他"]) : null;
+      const summary = fmt.summary(ex.sets);
 
       return (
         <div style={S.card}>
@@ -822,7 +879,7 @@
                   </span>
                 )}
               </div>
-              <span style={S.exMeta}>{ex.sets.length} 組{maxWeight > 0 && ` · 最高 ${maxWeight}kg`}</span>
+              <span style={S.exMeta}>{ex.sets.length} 組{summary && ` · ${summary}`}</span>
             </div>
             <button style={S.deleteExBtn} onClick={() => deleteExercise(exIdx)}>✕</button>
           </div>
@@ -831,8 +888,7 @@
             <div style={S.setsTable}>
               <div style={S.setsHeader}>
                 <span style={S.setCol}>組</span>
-                <span style={S.setCol}>重量 (kg)</span>
-                <span style={S.setCol}>次數</span>
+                {fmt.columns.map(c => <span key={c.key} style={S.setCol}>{c.label}</span>)}
                 <span style={{width:28}}></span>
               </div>
               {ex.sets.map((set, setIdx) => {
@@ -840,21 +896,17 @@
                 return (
                   <div key={setIdx} style={S.setRow} onClick={() => setEditingSet({exIdx, setIdx})}>
                     <span style={{...S.setCol, ...S.setNum}}>{setIdx+1}</span>
-                    {isEditing ? (
-                      <>
-                        <input style={S.setInput} type="number" value={set.weight} placeholder="0"
-                          onChange={e => updateSet(exIdx, setIdx, "weight", e.target.value)}
-                          onClick={e => e.stopPropagation()} />
-                        <input style={S.setInput} type="number" value={set.reps} placeholder="0"
-                          onChange={e => updateSet(exIdx, setIdx, "reps", e.target.value)}
-                          onClick={e => e.stopPropagation()} />
-                      </>
-                    ) : (
-                      <>
-                        <span style={S.setCol}>{set.weight || "—"}</span>
-                        <span style={S.setCol}>{set.reps || "—"}</span>
-                      </>
-                    )}
+                    {isEditing
+                      ? fmt.columns.map(c => (
+                          <input key={c.key} style={S.setInput} type="number" inputMode="decimal"
+                            value={set[c.key] ?? ""} placeholder={c.placeholder}
+                            onChange={e => updateSet(exIdx, setIdx, c.key, e.target.value)}
+                            onClick={e => e.stopPropagation()} />
+                        ))
+                      : fmt.columns.map(c => (
+                          <span key={c.key} style={S.setCol}>{set[c.key] || "—"}</span>
+                        ))
+                    }
                     <button style={S.deleteSetBtn}
                       onClick={e => { e.stopPropagation(); deleteSet(exIdx, setIdx); }}>✕</button>
                   </div>
