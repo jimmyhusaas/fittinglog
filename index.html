@@ -13,7 +13,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.39.0/dist/umd/supabase.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -37,11 +37,11 @@
     const { useState, useEffect, useRef } = React;
 
     // ─── Supabase config ───────────────────────────────────────────────────
-    // Fill these in from Supabase Dashboard → Settings → API.
-    // Leaving them blank keeps the app in local-only mode (no cloud sync).
-    // See SETUP.md for the 5-min walkthrough + SQL schema.
-    const SUPABASE_URL = "";
-    const SUPABASE_ANON_KEY = "";
+    // From Supabase Dashboard → Settings → API Keys.
+    // The publishable key is designed to be public — RLS policies in the
+    // sessions / exercises tables enforce per-user isolation (see SETUP.md).
+    const SUPABASE_URL = "https://hbpccferrndsxvcafpqg.supabase.co";
+    const SUPABASE_ANON_KEY = "sb_publishable_AQtUUmXpj8DRSO9Psam8QA_vxNqSeMH";
     const CLOUD_ENABLED = !!(SUPABASE_URL && SUPABASE_ANON_KEY && window.supabase);
     const sb = CLOUD_ENABLED ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 
