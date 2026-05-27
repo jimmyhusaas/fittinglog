@@ -92,12 +92,15 @@
     const PRESET_EXERCISES = PRESET_CATALOG.map(e => e.name);
 
     // Cutting plan training-day layout — drives the grouped preset chips.
+    // `groups` lets each day pick up custom exercises (added via the
+    // free-text input) whose muscle-group matches — so retagging a custom
+    // animation to '胸' auto-slots it under Day 1.
     const TRAINING_DAYS = [
-      { label: "Day 1 · 胸 + 三頭", exercises: ["啞鈴胸推", "上斜啞鈴胸推", "胸飛鳥", "Cable 三頭下壓", "過頭三頭伸展"] },
-      { label: "Day 2 · 背 + 二頭", exercises: ["滑輪下拉", "坐姿划船", "Pull over", "二頭彎舉", "錘式彎舉"] },
-      { label: "Day 3 · 肩",        exercises: ["啞鈴肩推", "側平舉", "單手繩索反向飛鳥"] },
-      { label: "Day 4 · 腿",        exercises: ["深蹲", "腿舉", "啞鈴硬舉", "坐姿腿彎舉"] },
-      { label: "有氧（每次重訓後）", exercises: ["坡度快走"] },
+      { label: "Day 1 · 胸 + 三頭", groups: ["胸", "三頭"], exercises: ["啞鈴胸推", "上斜啞鈴胸推", "胸飛鳥", "Cable 三頭下壓", "過頭三頭伸展"] },
+      { label: "Day 2 · 背 + 二頭", groups: ["背", "二頭"], exercises: ["滑輪下拉", "坐姿划船", "Pull over", "二頭彎舉", "錘式彎舉"] },
+      { label: "Day 3 · 肩",        groups: ["肩"],         exercises: ["啞鈴肩推", "側平舉", "單手繩索反向飛鳥"] },
+      { label: "Day 4 · 腿",        groups: ["腿"],         exercises: ["深蹲", "腿舉", "啞鈴硬舉", "坐姿腿彎舉"] },
+      { label: "有氧（每次重訓後）", groups: ["有氧"],       exercises: ["坡度快走"] },
     ];
 
     // Recording-format schemas. Each exercise's catalog entry carries a
@@ -142,8 +145,10 @@
     const MUSCLE_GROUP_COLORS = {
       "胸": "#ff6b6b", "背": "#4ecdc4", "肩": "#ffd166",
       "腿": "#95e1d3", "二頭": "#a78bfa", "三頭": "#a78bfa",
-      "核心": "#f4a261", "其他": "#888",
+      "有氧": "#ff9f43", "核心": "#f4a261", "其他": "#888",
     };
+    // Order matters — drives the dropdown options.
+    const MUSCLE_GROUPS = ["胸", "背", "肩", "腿", "二頭", "三頭", "有氧", "核心", "其他"];
 
     const formatDate = (d) => {
       const date = new Date(d + "T00:00:00");
@@ -255,6 +260,19 @@
         return () => clearInterval(id);
       }, []);
 
+      // Push a single catalog entry up to Supabase. Used by both
+      // ensureInCatalog (on add) and setCatalogGroup (on edit).
+      const pushCatalogEntry = (name, entry) => {
+        if (!CLOUD_ENABLED || !user) return;
+        sb.from("exercises").upsert({
+          name,
+          muscle_group: entry.group,
+          equipment: entry.equipment,
+          weight_recording: entry.weightRecording,
+        }, { onConflict: "user_id,name" })
+          .then(({ error }) => { if (error) console.warn("catalog upsert failed:", error); });
+      };
+
       const ensureInCatalog = (name) => {
         if (catalog[name]) return;
         const preset = PRESET_CATALOG.find(p => p.name === name);
@@ -264,15 +282,17 @@
         const next = { ...catalog, [name]: entry };
         setCatalog(next);
         saveCatalog(next);
-        if (CLOUD_ENABLED && user) {
-          sb.from("exercises").upsert({
-            name,
-            muscle_group: entry.group,
-            equipment: entry.equipment,
-            weight_recording: entry.weightRecording,
-          }, { onConflict: "user_id,name" })
-            .then(({ error }) => { if (error) console.warn("catalog upsert failed:", error); });
-        }
+        pushCatalogEntry(name, entry);
+      };
+
+      const setCatalogGroup = (name, newGroup) => {
+        const existing = catalog[name];
+        if (!existing || existing.group === newGroup) return;
+        const entry = { ...existing, group: newGroup };
+        const next = { ...catalog, [name]: entry };
+        setCatalog(next);
+        saveCatalog(next);
+        pushCatalogEntry(name, entry);
       };
 
       const showToast = (msg) => {
@@ -641,6 +661,7 @@
                 editingSet={editingSet}
                 setEditingSet={setEditingSet}
                 catalog={catalog}
+                setCatalogGroup={setCatalogGroup}
               />
             )}
             {view === "history" && (
@@ -746,7 +767,7 @@
     // ─── TodayView ─────────────────────────────────────────────────────────
     function TodayView({ session, selectedDate, setSelectedDate, newExercise, setNewExercise,
       handleAddExercise, addSet,
-      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog }) {
+      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog, setCatalogGroup }) {
 
       // Total volume sums only weight×reps exercises (cardio contributes 0).
       const totalVolume = session
@@ -757,6 +778,14 @@
       const isToday = selectedDate === todayStr();
       const presetNames = new Set(PRESET_EXERCISES);
       const customNames = Object.keys(catalog || {}).filter(n => !presetNames.has(n));
+      // Custom exercises slotted under a day section by their meta.group;
+      // anything still tagged "其他" (or no group) falls into the 其他 bucket.
+      const customByDay = TRAINING_DAYS.map(day =>
+        customNames.filter(n => day.groups.includes(catalog?.[n]?.group)).sort()
+      );
+      const uncategorizedCustom = customNames
+        .filter(n => !TRAINING_DAYS.some(d => d.groups.includes(catalog?.[n]?.group)))
+        .sort();
 
       return (
         <div>
@@ -791,7 +820,7 @@
                   addSet={addSet} updateSet={updateSet}
                   deleteSet={deleteSet} deleteExercise={deleteExercise}
                   editingSet={editingSet} setEditingSet={setEditingSet}
-                  meta={catalog?.[ex.name]} />
+                  meta={catalog?.[ex.name]} setCatalogGroup={setCatalogGroup} />
               ))
             : (
               <div style={S.emptyState}>
@@ -805,34 +834,37 @@
           <div style={S.addExSection}>
             <div style={S.presetsBox}>
               <div style={S.presetsBoxTitle}>快速新增動作</div>
-              {TRAINING_DAYS.map(day => (
-                <div key={day.label} style={S.presetGroup}>
-                  <div style={S.presetGroupHeader}>{day.label}</div>
-                  <div style={S.presetChips}>
-                    {day.exercises.map(name => {
-                      const meta = catalog?.[name];
-                      const color = meta?.group ? (MUSCLE_GROUP_COLORS[meta.group] || MUSCLE_GROUP_COLORS["其他"]) : C.textMuted;
-                      const alreadyAdded = session?.exercises?.some(e => e.name === name);
-                      return (
-                        <button key={name}
-                          style={{
-                            ...S.presetChip,
-                            borderColor: color + "55",
-                            ...(alreadyAdded ? S.presetChipAdded : {}),
-                          }}
-                          onClick={() => handleAddExercise(name)}>
-                          {alreadyAdded && "✓ "}{name}
-                        </button>
-                      );
-                    })}
+              {TRAINING_DAYS.map((day, dayIdx) => {
+                const allNames = [...day.exercises, ...customByDay[dayIdx]];
+                return (
+                  <div key={day.label} style={S.presetGroup}>
+                    <div style={S.presetGroupHeader}>{day.label}</div>
+                    <div style={S.presetChips}>
+                      {allNames.map(name => {
+                        const meta = catalog?.[name];
+                        const color = meta?.group ? (MUSCLE_GROUP_COLORS[meta.group] || MUSCLE_GROUP_COLORS["其他"]) : C.textMuted;
+                        const alreadyAdded = session?.exercises?.some(e => e.name === name);
+                        return (
+                          <button key={name}
+                            style={{
+                              ...S.presetChip,
+                              borderColor: color + "55",
+                              ...(alreadyAdded ? S.presetChipAdded : {}),
+                            }}
+                            onClick={() => handleAddExercise(name)}>
+                            {alreadyAdded && "✓ "}{name}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
-              {customNames.length > 0 && (
+                );
+              })}
+              {uncategorizedCustom.length > 0 && (
                 <div style={S.presetGroup}>
-                  <div style={S.presetGroupHeader}>其他</div>
+                  <div style={S.presetGroupHeader}>其他（點動作上的標籤可分類）</div>
                   <div style={S.presetChips}>
-                    {customNames.map(name => {
+                    {uncategorizedCustom.map(name => {
                       const alreadyAdded = session?.exercises?.some(e => e.name === name);
                       return (
                         <button key={name}
@@ -862,9 +894,10 @@
     }
 
     // ─── ExerciseCard ──────────────────────────────────────────────────────
-    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta }) {
+    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta, setCatalogGroup }) {
       const fmt = getFormat(meta);
-      const groupColor = meta?.group ? (MUSCLE_GROUP_COLORS[meta.group] || MUSCLE_GROUP_COLORS["其他"]) : null;
+      const currentGroup = meta?.group || "其他";
+      const groupColor = MUSCLE_GROUP_COLORS[currentGroup] || MUSCLE_GROUP_COLORS["其他"];
       const summary = fmt.summary(ex.sets);
 
       return (
@@ -873,11 +906,17 @@
             <div>
               <div style={S.exNameRow}>
                 <h3 style={S.exName}>{ex.name}</h3>
-                {meta?.group && (
-                  <span style={{...S.muscleTag, background: groupColor + "22", color: groupColor, borderColor: groupColor + "44"}}>
-                    {meta.group}
-                  </span>
-                )}
+                <label style={{...S.muscleTag, ...S.muscleTagEditable, background: groupColor + "22", color: groupColor, borderColor: groupColor + "44"}} title="點擊改肌群分類">
+                  {currentGroup}
+                  <span style={S.muscleTagChevron} aria-hidden="true">▾</span>
+                  <select
+                    style={S.muscleTagSelect}
+                    value={currentGroup}
+                    onChange={e => setCatalogGroup?.(ex.name, e.target.value)}
+                    aria-label="改肌群分類">
+                    {MUSCLE_GROUPS.map(g => <option key={g} value={g}>{g}</option>)}
+                  </select>
+                </label>
               </div>
               <span style={S.exMeta}>{ex.sets.length} 組{summary && ` · ${summary}`}</span>
             </div>
@@ -1036,6 +1075,9 @@
       exName: { margin: 0, fontSize: 17, fontWeight: 700, letterSpacing: 0.5 },
       exNameRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
       muscleTag: { fontSize: 10, padding: "2px 8px", borderRadius: 10, fontWeight: 700, border: "1px solid", letterSpacing: 1 },
+      muscleTagEditable: { position: "relative", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3, userSelect: "none" },
+      muscleTagChevron: { fontSize: 8, opacity: 0.7 },
+      muscleTagSelect: { position: "absolute", inset: 0, opacity: 0, cursor: "pointer", fontSize: 16, border: "none", padding: 0, background: "transparent", appearance: "none" },
       exMeta: { fontSize: 12, color: C.textMuted, marginTop: 2, display: "block" },
       deleteExBtn: { background: "none", border: "none", color: C.textMuted, fontSize: 14, cursor: "pointer", padding: "2px 6px", borderRadius: 4 },
       setsTable: { marginBottom: 10 },
