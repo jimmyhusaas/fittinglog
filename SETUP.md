@@ -59,12 +59,23 @@ create policy "users access own exercises"
   on public.exercises for all
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
+
+-- Explicit GRANT / REVOKE (belt-and-suspenders alongside RLS).
+-- Anon traffic gets rejected at the API boundary; authenticated users
+-- still pass through RLS, which then filters to their own rows.
+-- See SETUP.md "升級舊專案" section if you need to apply this to an
+-- already-running project.
+revoke all on public.sessions  from anon;
+revoke all on public.exercises from anon;
+grant select, insert, update, delete on public.sessions  to authenticated;
+grant select, insert, update, delete on public.exercises to authenticated;
 ```
 
 說明：
 - 一個訓練日一列，`(user_id, date)` 是主鍵
 - `exercises` 用 JSONB 直接存（暫時對應前端結構，第 3 步會正規化）
 - Row-Level Security 開著，每個使用者只看得到自己的列
+- 顯式 `revoke from anon` + `grant to authenticated`：深度防禦。RLS 已經夠用，但這層讓未登入流量在 PostgREST API 邊界就被擋掉，不需要走到 row-level filter。同時不受 Supabase 之後改預設 grant 政策影響。
 
 ## 3. 設定 Auth Redirect URL
 
@@ -114,6 +125,21 @@ const SUPABASE_ANON_KEY = "eyJhbGciOi...";
 - **每次改動**：本地立即存 localStorage，背景非同步 upsert 到 Supabase
 - **離線**：本地仍可寫入，下次連上線會在下次操作時 sync（v1 沒有自動補推背景重試）
 - **同步狀態**：header 右上角小圓點 — 黃色脈動 = 同步中、紅色 = 失敗
+
+## 升級舊專案（已跑過舊版 schema 的人）
+
+如果你的 Supabase 是在加入顯式 GRANT 那一行之前建的（兩張表已存在、跑得起來），補上深度防禦只要跑這段 patch SQL：
+
+```sql
+revoke all on public.sessions  from anon;
+revoke all on public.exercises from anon;
+grant select, insert, update, delete on public.sessions  to authenticated;
+grant select, insert, update, delete on public.exercises to authenticated;
+```
+
+到 Dashboard → **SQL Editor** → **New query**，貼上按 Run。跑完什麼都不會壞 — RLS 仍是主要安全層，這層只是加一道前置的權限白名單。
+
+跑完到左側 **Security Advisor** 確認 `public.sessions` 和 `public.exercises` 不再標 “anon role accessible” 之類的警告。
 
 ## 疑難排解
 
