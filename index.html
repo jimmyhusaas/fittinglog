@@ -300,6 +300,31 @@
         setTimeout(() => setToast(""), 1800);
       };
 
+      // Backfill the catalog whenever logs change. If an exercise name
+      // appears in a session but not in catalog (e.g., custom name added
+      // on another device whose pre-fix sync never pushed it up, or a
+      // freshly imported JSON), give it a stub entry so it shows up in
+      // the quick-add panel and gets a muscle-group tag on its card.
+      useEffect(() => {
+        const orphans = new Set();
+        for (const l of logs) {
+          for (const e of l.exercises) {
+            if (!catalog[e.name]) orphans.add(e.name);
+          }
+        }
+        if (orphans.size === 0) return;
+        const next = { ...catalog };
+        for (const name of orphans) {
+          const preset = PRESET_CATALOG.find(p => p.name === name);
+          next[name] = preset
+            ? { group: preset.group, equipment: preset.equipment, weightRecording: preset.weightRecording, recordingFormat: preset.recordingFormat || "weight_reps" }
+            : { group: "其他", equipment: null, weightRecording: "single", recordingFormat: "weight_reps" };
+        }
+        setCatalog(next);
+        saveCatalog(next);
+        for (const name of orphans) pushCatalogEntry(name, next[name]);
+      }, [logs]);
+
       // Push specific dates to Supabase, plus any previously-queued dates
       // awaiting retry. On failure, all attempted dates go (back) into the
       // queue so the next sync attempt will retry them. Idempotent — safe
