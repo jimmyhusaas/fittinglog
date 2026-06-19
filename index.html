@@ -517,7 +517,8 @@
               : l
           );
         } else {
-          newLogs = [{ date: selectedDate, exercises: [{ name: name.trim(), sets: [] }] }, ...logs];
+          newLogs = [{ date: selectedDate, exercises: [{ name: name.trim(), sets: [] }] }, ...logs]
+            .sort((a, b) => b.date.localeCompare(a.date));
         }
         save(newLogs, [selectedDate]);
         setNewExercise("");
@@ -1027,16 +1028,19 @@
               <p style={S.emptyHint}>從今日頁面開始紀錄，<br/>或用上方 ⬆ 從備份匯入</p>
             </div>
           ) : (() => {
+            // Defensive sort — keeps display correct even if upstream data
+            // happened to be unsorted (older backfill scenario).
+            const sortedLogs = [...logs].sort((a, b) => b.date.localeCompare(a.date));
             const monthCounts = {};
-            for (const l of logs) {
+            for (const l of sortedLogs) {
               const m = l.date.slice(0, 7);
               monthCounts[m] = (monthCounts[m] || 0) + 1;
             }
             return (<>
               <p style={S.historyHint}>點擊日期可查看或編輯</p>
-              {logs.map((l, i) => {
+              {sortedLogs.map((l, i) => {
                 const month = l.date.slice(0, 7);
-                const prevMonth = i > 0 ? logs[i-1].date.slice(0, 7) : null;
+                const prevMonth = i > 0 ? sortedLogs[i-1].date.slice(0, 7) : null;
                 const showMonthHeader = month !== prevMonth;
                 const totalSets = l.exercises.reduce((s, e) => s + e.sets.length, 0);
                 const volume = l.exercises.reduce((sum, ex) =>
