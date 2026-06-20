@@ -28,6 +28,8 @@
     input[type=number] { -moz-appearance: textfield; }
     button { font-family: inherit; }
     @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
   </style>
 </head>
 <body>
@@ -65,6 +67,7 @@
       // 背
       { name: "滑輪下拉",      group: "背", equipment: "cable",    weightRecording: "total"  },
       { name: "坐姿划船",      group: "背", equipment: "cable",    weightRecording: "total"  },
+      { name: "直臂下拉",      group: "背", equipment: "cable",    weightRecording: "total"  },
       { name: "Pull over",     group: "背", equipment: "dumbbell", weightRecording: "single" },
       { name: "硬舉",          group: "背", equipment: "barbell",  weightRecording: "total"  },
       { name: "引體向上",      group: "背", equipment: "bodyweight", weightRecording: "total" },
@@ -97,7 +100,7 @@
     // animation to '胸' auto-slots it under Day 1.
     const TRAINING_DAYS = [
       { label: "Day 1 · 胸 + 三頭", groups: ["胸", "三頭"], exercises: ["啞鈴胸推", "上斜啞鈴胸推", "胸飛鳥", "Cable 三頭下壓", "過頭三頭伸展"] },
-      { label: "Day 2 · 背 + 二頭", groups: ["背", "二頭"], exercises: ["滑輪下拉", "坐姿划船", "Pull over", "二頭彎舉", "錘式彎舉"] },
+      { label: "Day 2 · 背 + 二頭", groups: ["背", "二頭"], exercises: ["滑輪下拉", "坐姿划船", "直臂下拉", "二頭彎舉", "錘式彎舉"] },
       { label: "Day 3 · 肩",        groups: ["肩"],         exercises: ["啞鈴肩推", "側平舉", "單手繩索反向飛鳥"] },
       { label: "Day 4 · 腿",        groups: ["腿"],         exercises: ["深蹲", "腿舉", "啞鈴硬舉", "坐姿腿彎舉"] },
       { label: "有氧（每次重訓後）", groups: ["有氧"],       exercises: ["坡度快走"] },
@@ -133,6 +136,197 @@
       },
     };
     const getFormat = (meta) => RECORDING_FORMATS[meta?.recordingFormat || "weight_reps"] || RECORDING_FORMATS.weight_reps;
+
+    // Per-exercise execution cues. Surfaced by the ⓘ button on each
+    // exercise card → opens a bottom sheet. Source of truth is the
+    // cutting plan markdown; updating numbers here mirrors a plan edit.
+    const EXERCISE_DETAILS = {
+      "啞鈴胸推": {
+        target: "17.5 × 13 × 4",
+        instructions: [
+          "躺在平板椅，雙腳踩地穩定",
+          "啞鈴舉至胸口兩側，掌心朝前，手肘約 45 度角",
+          "吐氣推起，手臂不完全鎖死",
+          "吸氣下降，啞鈴降至胸口旁感覺胸肌拉伸",
+        ],
+        focusPoint: "胸肌中間",
+      },
+      "上斜啞鈴胸推": {
+        target: "15 × 13 × 3",
+        instructions: [
+          "椅背調至 30–45 度",
+          "動作與平板胸推相同，手肘角度更靠近身體",
+        ],
+        focusPoint: "上胸靠近鎖骨位置",
+      },
+      "胸飛鳥": {
+        target: "50 × 15 × 3",
+        instructions: [
+          "坐在椅子上，背部緊貼椅背",
+          "手臂放在兩側臂墊上，不是握把手",
+          "兩側臂墊向胸前合攏，感受胸肌收縮",
+          "頂點停一秒",
+          "慢速放回，不讓重量砸回去",
+        ],
+        focusPoint: "胸肌中間",
+      },
+      "Cable 三頭下壓": {
+        target: "40 × 12 × 3",
+        instructions: [
+          "站在滑輪機正前方，距離機器約一步",
+          "身體微微前傾 10–15 度，不要完全直立也不要彎太多",
+          "腳一前一後站比較穩定，或雙腳與肩同寬平行站都可以",
+          "手肘夾緊固定在身體兩側，全程不動",
+          "前臂往下壓到底，到達底部時雙手往兩側微微分開",
+          "頂點停一秒感受三頭收縮",
+          "慢速回到起始位置，前臂約 90 度角",
+        ],
+        focusPoint: "上臂後側",
+      },
+      "過頭三頭伸展": {
+        target: "15 × 10 × 3",
+        instructions: [
+          "坐姿，雙手握住一個啞鈴舉到頭頂正上方",
+          "掌心朝上托住啞鈴上端內側",
+          "手肘夾緊靠近耳朵，全程固定不外開",
+          "前臂往後下方彎曲，降到頭部後方感覺三頭拉伸",
+          "用三頭出力推回頭頂",
+        ],
+        focusPoint: "上臂後側深處（長頭）",
+      },
+      "滑輪下拉": {
+        target: "40 × 15 × 4",
+        instructions: [
+          "坐在機器，大腿固定在護墊下",
+          "寬握（比肩寬一個拳頭），掌心朝前",
+          "把手拉向胸口上方，手肘往下往後帶",
+          "頂點胸口挺起，想像把手肘插進褲子口袋",
+          "慢速回到起始位置，感受背闊肌拉伸",
+        ],
+      },
+      "坐姿划船": {
+        target: "40 × 13 × 4",
+        instructions: [
+          "坐直，背部不圓背，胸口微挺",
+          "把手拉向腹部，手肘貼近身體往後帶",
+          "頂點感受背部中間（菱形肌）收縮，停一秒",
+          "慢速放回，手臂打直時感覺背部拉伸",
+        ],
+      },
+      "直臂下拉": {
+        target: "30–40 × 13 × 3",
+        instructions: [
+          "站在滑輪機前，繩索設在高處",
+          "雙手握把手，手臂全程打直不彎曲",
+          "從頭頂前方把手臂往下壓到大腿前側",
+          "頂點停一秒感受背闊肌收縮",
+          "慢速回到起始位置，感受側背拉伸",
+        ],
+        focusPoint: "側背腋下（背闊肌）",
+        warning: "如果感受點跑到上臂後側，代表手肘彎了，重新打直",
+      },
+      "二頭彎舉": {
+        target: "12.5 × 8 × 3",
+        instructions: [
+          "站姿，手肘夾緊固定在身側",
+          "前臂往上捲，掌心朝上翻腕",
+          "頂點停一秒，感受二頭頂點收縮",
+          "慢速放下，手臂不完全打直保持張力",
+        ],
+        focusPoint: "上臂前側",
+      },
+      "錘式彎舉": {
+        target: "10 × 8 × 3",
+        instructions: [
+          "動作與二頭彎舉相同",
+          "差別：虎口朝前，全程手心朝內不翻腕，像拿錘子",
+        ],
+        focusPoint: "肱肌（二頭肌下方）和前臂；這個動作是手臂立體感的關鍵",
+      },
+      "啞鈴肩推": {
+        target: "12.5 × 13 × 4",
+        instructions: [
+          "坐姿，啞鈴舉至肩膀兩側，掌心朝前",
+          "往上推，手臂不完全鎖死",
+          "慢速放回肩膀高度",
+        ],
+        focusPoint: "肩膀前束和中束",
+      },
+      "側平舉": {
+        target: "10 × 13 × 4",
+        instructions: [
+          "站姿，雙手各握啞鈴，手臂微彎",
+          "往兩側舉起至肩膀高度",
+          "小指略高於拇指（倒水動作），確保中束出力",
+          "慢速放下，不借力甩，全程控制",
+        ],
+        focusPoint: "肩膀兩側中束",
+      },
+      "單手繩索反向飛鳥": {
+        target: "20 × 10 × 3（單側）",
+        instructions: [
+          "滑輪設在眼睛高度",
+          "單手交叉握對側把手，另一手扶機器",
+          "往後站一步穩定身體",
+          "手臂微彎，以 45 度角往側後方打開（不是 90 度）",
+          "打開到底停一秒感受後三角收縮",
+          "左右各做 13 下算一組",
+        ],
+        focusPoint: "後三角肌",
+      },
+      "深蹲": {
+        target: "50 × 15 × 4（槓鈴 20kg + 兩側各 15kg 片）",
+        instructions: [
+          "槓鈴放在斜方肌上，雙腳與肩同寬或略寬",
+          "吸氣，核心收緊，胸口挺起",
+          "往下蹲，膝蓋對準腳尖方向，不內扣",
+          "大腿至少平行地面",
+          "吐氣站起，夾臀",
+        ],
+        focusPoint: "股四頭、臀部",
+      },
+      "腿舉": {
+        target: "40 × 13 × 4（單側）",
+        instructions: [
+          "背部和臀部緊貼椅背，腰不要拱起",
+          "腳踩踏板與肩同寬，腳尖略朝外",
+          "下降到大腿約平行地面，不需要碰胸",
+          "膝蓋對準腳尖方向，不要內扣",
+          "推回時膝蓋不完全鎖死，保持肌肉張力",
+        ],
+      },
+      "啞鈴硬舉": {
+        target: "12.5 × 13 × 4",
+        instructions: [
+          "站姿，雙手各握啞鈴，手臂打直",
+          "背部全程打直，屁股往後推",
+          "啞鈴沿腿前側下滑，感覺大腿後側被拉緊",
+          "降到小腿中段，不需要碰地",
+          "夾臀站起回到起始位置",
+        ],
+        focusPoint: "大腿後側（腿後腱）",
+      },
+      "坐姿腿彎舉": {
+        target: "55 × 13 × 3",
+        instructions: [
+          "坐在機器上，腳踝放在滾輪上方",
+          "背部緊貼椅背",
+          "小腿往下勾向椅子底部",
+          "頂點停一秒感受大腿後側收縮",
+          "慢速放回，不讓重量砸回去",
+        ],
+        focusPoint: "大腿後側（腿後腱）",
+      },
+      "坡度快走": {
+        target: "前 10 min · 10% · 5.5 km/h ／ 後 15 min · 11% · 5.5 km/h",
+        instructions: [
+          "前 10 分鐘：坡度 10%、時速 5.5 km/h",
+          "後 15 分鐘：坡度 11%、時速 5.5 km/h",
+          "不握把手（握了等於坡度減半）",
+          "時機：重訓結束後立刻執行",
+        ],
+      },
+    };
 
     const WEIGHT_RECORDING_GUIDE = [
       { equipment: "啞鈴（雙手各持一個）", recording: "單手重量" },
@@ -247,6 +441,7 @@
       const [selectedDate, setSelectedDate] = useState(todayStr());
       const [newExercise, setNewExercise] = useState("");
       const [editingSet, setEditingSet] = useState(null);
+      const [viewingDetails, setViewingDetails] = useState(null);
       const [toast, setToast] = useState("");
       const [user, setUser] = useState(null);
       const [authReady, setAuthReady] = useState(!CLOUD_ENABLED);
@@ -695,6 +890,7 @@
                 setEditingSet={setEditingSet}
                 catalog={catalog}
                 setCatalogGroup={setCatalogGroup}
+                onShowDetails={setViewingDetails}
               />
             )}
             {view === "history" && (
@@ -706,6 +902,9 @@
               />
             )}
           </main>
+          {viewingDetails && (
+            <ExerciseDetailSheet name={viewingDetails} onClose={() => setViewingDetails(null)} />
+          )}
         </div>
       );
     }
@@ -766,6 +965,52 @@
       );
     }
 
+    // ─── ExerciseDetailSheet ───────────────────────────────────────────────
+    // Bottom sheet that surfaces the cutting-plan cues for one exercise.
+    // Dismissed by tapping the dim overlay or the ✕ button. Body scrolls
+    // independently if the cue list is long.
+    function ExerciseDetailSheet({ name, onClose }) {
+      const d = EXERCISE_DETAILS[name];
+      if (!d) return null;
+      return (
+        <div style={S.sheetOverlay} onClick={onClose} role="dialog" aria-label={`${name} 說明`}>
+          <div style={S.sheet} onClick={e => e.stopPropagation()}>
+            <div style={S.sheetHandle} />
+            <div style={S.sheetHeader}>
+              <h3 style={S.sheetTitle}>{name}</h3>
+              <button style={S.sheetClose} onClick={onClose} aria-label="關閉">✕</button>
+            </div>
+            <div style={S.sheetBody}>
+              {d.target && (
+                <div style={S.sheetTargetRow}>
+                  <span style={S.sheetTargetLabel}>目標</span>
+                  <span style={S.sheetTargetValue}>{d.target}</span>
+                </div>
+              )}
+              <div style={S.sheetSection}>
+                <div style={S.sheetSectionLabel}>執行步驟</div>
+                <ol style={S.sheetSteps}>
+                  {d.instructions.map((s, i) => <li key={i} style={S.sheetStep}>{s}</li>)}
+                </ol>
+              </div>
+              {d.focusPoint && (
+                <div style={S.sheetFocus}>
+                  <span style={S.sheetFocusLabel}>感受點</span>
+                  <span style={S.sheetFocusText}>{d.focusPoint}</span>
+                </div>
+              )}
+              {d.warning && (
+                <div style={S.sheetWarning}>
+                  <strong>⚠️</strong>
+                  <span>{d.warning}</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // ─── RecordingGuide ────────────────────────────────────────────────────
     function RecordingGuide() {
       const [open, setOpen] = useState(false);
@@ -800,7 +1045,7 @@
     // ─── TodayView ─────────────────────────────────────────────────────────
     function TodayView({ session, selectedDate, setSelectedDate, newExercise, setNewExercise,
       handleAddExercise, addSet,
-      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog, setCatalogGroup }) {
+      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog, setCatalogGroup, onShowDetails }) {
 
       // Total volume sums only weight×reps exercises (cardio contributes 0).
       const totalVolume = session
@@ -853,7 +1098,8 @@
                   addSet={addSet} updateSet={updateSet}
                   deleteSet={deleteSet} deleteExercise={deleteExercise}
                   editingSet={editingSet} setEditingSet={setEditingSet}
-                  meta={catalog?.[ex.name]} setCatalogGroup={setCatalogGroup} />
+                  meta={catalog?.[ex.name]} setCatalogGroup={setCatalogGroup}
+                  onShowDetails={onShowDetails} />
               ))
             : (
               <div style={S.emptyState}>
@@ -927,11 +1173,12 @@
     }
 
     // ─── ExerciseCard ──────────────────────────────────────────────────────
-    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta, setCatalogGroup }) {
+    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta, setCatalogGroup, onShowDetails }) {
       const fmt = getFormat(meta);
       const currentGroup = meta?.group || "其他";
       const groupColor = MUSCLE_GROUP_COLORS[currentGroup] || MUSCLE_GROUP_COLORS["其他"];
       const summary = fmt.summary(ex.sets);
+      const hasDetails = !!EXERCISE_DETAILS[ex.name];
 
       return (
         <div style={S.card}>
@@ -939,6 +1186,9 @@
             <div>
               <div style={S.exNameRow}>
                 <h3 style={S.exName}>{ex.name}</h3>
+                {hasDetails && (
+                  <button style={S.infoBtn} onClick={() => onShowDetails?.(ex.name)} title="動作說明" aria-label="動作說明">ⓘ</button>
+                )}
                 <label style={{...S.muscleTag, ...S.muscleTagEditable, background: groupColor + "22", color: groupColor, borderColor: groupColor + "44"}} title="點擊改肌群分類">
                   {currentGroup}
                   <span style={S.muscleTagChevron} aria-hidden="true">▾</span>
@@ -1133,6 +1383,25 @@
       muscleTagEditable: { position: "relative", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 3, userSelect: "none" },
       muscleTagChevron: { fontSize: 8, opacity: 0.7 },
       muscleTagSelect: { position: "absolute", inset: 0, opacity: 0, cursor: "pointer", fontSize: 16, border: "none", padding: 0, background: "transparent", appearance: "none" },
+      infoBtn: { background: "none", border: "none", color: C.textMuted, fontSize: 18, cursor: "pointer", padding: "0 4px", lineHeight: 1, fontFamily: "inherit" },
+      sheetOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 1000, animation: "fadeIn 0.15s ease-out" },
+      sheet: { background: C.surface, width: "100%", maxWidth: 480, maxHeight: "85vh", borderTopLeftRadius: 16, borderTopRightRadius: 16, display: "flex", flexDirection: "column", animation: "slideUp 0.2s ease-out" },
+      sheetHandle: { width: 36, height: 4, background: C.border, borderRadius: 2, margin: "8px auto 0" },
+      sheetHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px 8px", borderBottom: `1px solid ${C.border}` },
+      sheetTitle: { margin: 0, fontSize: 18, fontWeight: 800, letterSpacing: 1 },
+      sheetClose: { background: "none", border: "none", color: C.textMuted, fontSize: 18, cursor: "pointer", padding: "4px 8px", fontFamily: "inherit" },
+      sheetBody: { padding: "16px", overflowY: "auto", flex: 1 },
+      sheetTargetRow: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: C.surfaceHigh, borderRadius: C.radius, marginBottom: 16 },
+      sheetTargetLabel: { fontSize: 11, color: C.textMuted, fontWeight: 700, letterSpacing: 1 },
+      sheetTargetValue: { fontSize: 15, fontWeight: 700, color: C.accent, textAlign: "right" },
+      sheetSection: { marginBottom: 16 },
+      sheetSectionLabel: { fontSize: 11, color: C.textMuted, fontWeight: 700, letterSpacing: 1, marginBottom: 8, textTransform: "uppercase" },
+      sheetSteps: { paddingLeft: 20, margin: 0, display: "flex", flexDirection: "column", gap: 6 },
+      sheetStep: { fontSize: 14, lineHeight: 1.6, color: C.text },
+      sheetFocus: { display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 12px", background: C.accent + "15", border: `1px solid ${C.accent}44`, borderRadius: C.radius, marginBottom: 16 },
+      sheetFocusLabel: { fontSize: 11, color: C.accent, fontWeight: 700, letterSpacing: 1, flexShrink: 0, paddingTop: 2 },
+      sheetFocusText: { fontSize: 14, color: C.text, lineHeight: 1.5 },
+      sheetWarning: { display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 12px", background: C.red + "15", border: `1px solid ${C.red}44`, borderRadius: C.radius, fontSize: 13, color: C.text, lineHeight: 1.5 },
       exMeta: { fontSize: 12, color: C.textMuted, marginTop: 2, display: "block" },
       deleteExBtn: { background: "none", border: "none", color: C.textMuted, fontSize: 14, cursor: "pointer", padding: "2px 6px", borderRadius: 4 },
       setsTable: { marginBottom: 10 },
