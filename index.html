@@ -527,6 +527,21 @@
         for (const name of orphans) pushCatalogEntry(name, next[name]);
       }, [logs]);
 
+      // Strip empty sessions (date row with no exercises) — e.g., the user
+      // added an exercise and later deleted all of them. The date used to
+      // linger in history as "0 個動作 · 0 組" until the next mutation;
+      // now it gets cleaned up on the next render, including a cloud delete.
+      useEffect(() => {
+        const empties = logs.filter(l => !l.exercises || l.exercises.length === 0);
+        if (empties.length === 0) return;
+        const cleaned = logs.filter(l => l.exercises && l.exercises.length > 0);
+        setLogs(cleaned);
+        saveLogs(cleaned);
+        if (CLOUD_ENABLED && user) {
+          syncDatesToCloud(cleaned, empties.map(e => e.date));
+        }
+      }, [logs]);
+
       // Push specific dates to Supabase, plus any previously-queued dates
       // awaiting retry. On failure, all attempted dates go (back) into the
       // queue so the next sync attempt will retry them. Idempotent — safe
@@ -764,11 +779,16 @@
       };
 
       const deleteExercise = (exIdx) => {
-        save(logs.map(l =>
-          l.date === selectedDate
-            ? { ...l, exercises: l.exercises.filter((_, i) => i !== exIdx) }
-            : l
-        ), [selectedDate]);
+        // If this removes the session's last exercise, drop the whole
+        // session row so the date doesn't linger in history as "0 個動作".
+        // syncDatesToCloud picks up the absence and issues a cloud delete.
+        const newLogs = logs.reduce((acc, l) => {
+          if (l.date !== selectedDate) { acc.push(l); return acc; }
+          const remaining = l.exercises.filter((_, i) => i !== exIdx);
+          if (remaining.length > 0) acc.push({ ...l, exercises: remaining });
+          return acc;
+        }, []);
+        save(newLogs, [selectedDate]);
       };
 
       const exportData = () => {
