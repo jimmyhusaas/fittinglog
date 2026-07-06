@@ -479,7 +479,19 @@
           const raw = localStorage.getItem("rest-timer-v1");
           if (!raw) return null;
           const parsed = JSON.parse(raw);
+          if (parsed.pausedRemainingMs != null) return parsed.context;
           return parsed.endsAt > Date.now() ? parsed.context : null;
+        } catch { return null; }
+      });
+      // Non-null only while the timer is paused — holds the ms left at the
+      // moment the user tapped pause. When set, the tick effect no-ops and
+      // the bar renders this value verbatim.
+      const [restPausedRemainingMs, setRestPausedRemainingMs] = useState(() => {
+        try {
+          const raw = localStorage.getItem("rest-timer-v1");
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed.pausedRemainingMs ?? null;
         } catch { return null; }
       });
       const [nowTickMs, setNowTickMs] = useState(Date.now());
@@ -571,23 +583,53 @@
         const context = { exerciseName, originalSeconds: seconds };
         setRestEndsAt(endsAt);
         setRestContext(context);
+        setRestPausedRemainingMs(null);
         localStorage.setItem("rest-timer-v1", JSON.stringify({ endsAt, context }));
         ensureNotificationPerm();
       };
 
       const adjustRest = (deltaSeconds) => {
+        // Adjust the remaining time — works both live and while paused.
+        if (restPausedRemainingMs != null) {
+          const next = Math.max(5000, restPausedRemainingMs + deltaSeconds * 1000);
+          setRestPausedRemainingMs(next);
+          localStorage.setItem("rest-timer-v1", JSON.stringify({
+            endsAt: null, context: restContext, pausedRemainingMs: next,
+          }));
+          return;
+        }
         if (!restEndsAt) return;
         const proposed = restEndsAt + deltaSeconds * 1000;
-        const floor = Date.now() + 5000; // never drop below +5s remaining
+        const floor = Date.now() + 5000;
         const newEndsAt = Math.max(floor, proposed);
         setRestEndsAt(newEndsAt);
         restFiredRef.current = false;
         localStorage.setItem("rest-timer-v1", JSON.stringify({ endsAt: newEndsAt, context: restContext }));
       };
 
+      const pauseRest = () => {
+        if (!restEndsAt || restPausedRemainingMs != null) return;
+        const remaining = Math.max(0, restEndsAt - Date.now());
+        setRestPausedRemainingMs(remaining);
+        setRestEndsAt(null);
+        localStorage.setItem("rest-timer-v1", JSON.stringify({
+          endsAt: null, context: restContext, pausedRemainingMs: remaining,
+        }));
+      };
+
+      const resumeRest = () => {
+        if (restPausedRemainingMs == null) return;
+        const newEndsAt = Date.now() + restPausedRemainingMs;
+        restFiredRef.current = false;
+        setRestEndsAt(newEndsAt);
+        setRestPausedRemainingMs(null);
+        localStorage.setItem("rest-timer-v1", JSON.stringify({ endsAt: newEndsAt, context: restContext }));
+      };
+
       const stopRest = () => {
         setRestEndsAt(null);
         setRestContext(null);
+        setRestPausedRemainingMs(null);
         restFiredRef.current = false;
         localStorage.removeItem("rest-timer-v1");
       };
@@ -1056,12 +1098,15 @@
           {viewingDetails && (
             <ExerciseDetailSheet name={viewingDetails} onClose={() => setViewingDetails(null)} />
           )}
-          {restEndsAt && (
+          {(restEndsAt || restPausedRemainingMs != null) && (
             <RestTimerBar
               endsAt={restEndsAt}
               nowMs={nowTickMs}
               context={restContext}
+              pausedRemainingMs={restPausedRemainingMs}
               onAdjust={adjustRest}
+              onPause={pauseRest}
+              onResume={resumeRest}
               onStop={stopRest}
             />
           )}
@@ -1129,26 +1174,33 @@
     // Sticky bottom bar showing the current rest countdown. Progress
     // bar shrinks from full → empty; the whole bar flashes red for the
     // last 5 seconds. Adjust ±15s / skip.
-    function RestTimerBar({ endsAt, nowMs, context, onAdjust, onStop }) {
-      const remainingMs = Math.max(0, endsAt - nowMs);
+    function RestTimerBar({ endsAt, nowMs, context, pausedRemainingMs, onAdjust, onPause, onResume, onStop }) {
+      const paused = pausedRemainingMs != null;
+      const remainingMs = paused ? pausedRemainingMs : Math.max(0, endsAt - nowMs);
       const totalMs = (context?.originalSeconds || 60) * 1000;
       const secs = Math.ceil(remainingMs / 1000);
       const mm = Math.floor(secs / 60);
       const ss = secs % 60;
       const progress = Math.max(0, Math.min(1, remainingMs / totalMs));
-      const critical = remainingMs > 0 && remainingMs < 5000;
-      const done = remainingMs <= 0;
+      // Only flash the last-5-seconds warning when actively running.
+      const critical = !paused && remainingMs > 0 && remainingMs < 5000;
+      const done = !paused && remainingMs <= 0;
+      const label = done ? "休息結束" : paused ? "已暫停" : "休息中";
       return (
-        <div style={{...S.restBar, ...(critical ? S.restBarCritical : {}), ...(done ? S.restBarDone : {})}}>
+        <div style={{...S.restBar, ...(critical ? S.restBarCritical : {}), ...(done ? S.restBarDone : {}), ...(paused ? S.restBarPaused : {})}}>
           <div style={{...S.restBarProgress, width: `${progress * 100}%`}} />
           <div style={S.restBarInner}>
             <div style={S.restBarLeft}>
-              <div style={S.restBarLabel}>{done ? "休息結束" : "休息中"}{context?.exerciseName ? ` · ${context.exerciseName}` : ""}</div>
+              <div style={S.restBarLabel}>{label}{context?.exerciseName ? ` · ${context.exerciseName}` : ""}</div>
               <div style={S.restBarTime}>{mm}:{String(ss).padStart(2, "0")}</div>
             </div>
             <div style={S.restBarActions}>
               <button style={S.restBarAdjustBtn} onClick={() => onAdjust(-15)}>-15</button>
               <button style={S.restBarAdjustBtn} onClick={() => onAdjust(15)}>+15</button>
+              {paused
+                ? <button style={S.restBarPauseBtn} onClick={onResume} title="繼續">▶</button>
+                : <button style={S.restBarPauseBtn} onClick={onPause} title="暫停">⏸</button>
+              }
               <button style={S.restBarStopBtn} onClick={onStop} title="結束">✕</button>
             </div>
           </div>
@@ -1431,9 +1483,14 @@
           <div style={S.setActionRow}>
             <button style={S.addSetBtn} onClick={() => addSet(exIdx)}>＋ 新增組數</button>
             {restSeconds > 0 && (
-              <button style={S.restStartBtn} onClick={() => onStartRest?.(ex.name, restSeconds)} title="開始休息倒數">
-                ⏱ {restSeconds}s
-              </button>
+              <>
+                <button style={S.restStartBtn} onClick={() => onStartRest?.(ex.name, 90)} title="開始 90 秒休息">
+                  ⏱ 90
+                </button>
+                <button style={S.restStartBtn} onClick={() => onStartRest?.(ex.name, 120)} title="開始 120 秒休息">
+                  ⏱ 120
+                </button>
+              </>
             )}
           </div>
         </div>
@@ -1616,6 +1673,7 @@
       restBar: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: C.surface, borderTop: `1px solid ${C.accent}`, zIndex: 900, overflow: "hidden", boxShadow: "0 -4px 20px rgba(0,0,0,0.4)" },
       restBarCritical: { borderTopColor: C.red, animation: "pulse 0.6s infinite" },
       restBarDone: { borderTopColor: C.accent, boxShadow: `0 -6px 20px ${C.accent}55` },
+      restBarPaused: { borderTopColor: C.textMuted, opacity: 0.85 },
       restBarProgress: { position: "absolute", top: 0, left: 0, height: "100%", background: C.accent + "22", transition: "width 250ms linear" },
       restBarInner: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", gap: 8 },
       restBarLeft: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
@@ -1623,6 +1681,7 @@
       restBarTime: { fontSize: 26, fontWeight: 900, color: C.accent, fontVariantNumeric: "tabular-nums", lineHeight: 1 },
       restBarActions: { display: "flex", gap: 6, flexShrink: 0 },
       restBarAdjustBtn: { background: C.surfaceHigh, border: `1px solid ${C.border}`, color: C.text, fontSize: 12, padding: "6px 10px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 },
+      restBarPauseBtn: { background: C.surfaceHigh, border: `1px solid ${C.accent}88`, color: C.accent, fontSize: 12, width: 32, height: 32, borderRadius: "50%", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700 },
       restBarStopBtn: { background: "none", border: `1px solid ${C.border}`, color: C.textMuted, fontSize: 12, width: 32, height: 32, borderRadius: "50%", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center" },
       addExSection: { marginTop: 8 },
       addExRow: { display: "flex", gap: 8 },
