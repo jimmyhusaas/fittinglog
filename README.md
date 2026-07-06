@@ -2,7 +2,7 @@
 
 簡單、快速的健身訓練 log 工具。
 
-🔗 **https://94c4c686-fittinglog.jimmyhusaas.workers.dev**
+🔗 **https://fittinglog.jimmyhusaas.workers.dev**
 
 ## 功能
 
