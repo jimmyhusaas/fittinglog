@@ -7,6 +7,10 @@
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="apple-mobile-web-app-title" content="訓練紀錄" />
+  <meta name="theme-color" content="#e8ff47" />
+  <link rel="manifest" href="./manifest.webmanifest" />
+  <link rel="icon" href="./icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="./icon.svg" />
   <title>訓練紀錄</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;600;700;900&display=swap" rel="stylesheet" />
@@ -136,6 +140,23 @@
       },
     };
     const getFormat = (meta) => RECORDING_FORMATS[meta?.recordingFormat || "weight_reps"] || RECORDING_FORMATS.weight_reps;
+
+    // Rest-time default per exercise (seconds). Fed into the ⏱ button
+    // on each exercise card + used as the starting duration of the
+    // sticky countdown bar. Anything missing defaults to 90s
+    // (single-joint isolation). Set to 0 to hide the button (cardio).
+    const REST_SECONDS = {
+      "深蹲":         180,  // heavy compound (spinal load)
+      "啞鈴胸推":     120,  // medium compound
+      "上斜啞鈴胸推": 120,
+      "滑輪下拉":     120,
+      "坐姿划船":     120,
+      "啞鈴肩推":     120,
+      "腿舉":         120,
+      "啞鈴硬舉":     120,
+      "坡度快走":       0,  // cardio — timer not applicable
+    };
+    const getRestSeconds = (name) => REST_SECONDS[name] ?? 90;
 
     // Per-exercise execution cues. Surfaced by the ⓘ button on each
     // exercise card → opens a bottom sheet. Source of truth is the
@@ -442,6 +463,27 @@
       const [newExercise, setNewExercise] = useState("");
       const [editingSet, setEditingSet] = useState(null);
       const [viewingDetails, setViewingDetails] = useState(null);
+      // Rest timer state. `restEndsAt` is a Date.now() timestamp — using
+      // absolute wall-clock time means the countdown stays accurate
+      // through screen sleep, tab switch, and reload (restore from LS).
+      const [restEndsAt, setRestEndsAt] = useState(() => {
+        try {
+          const raw = localStorage.getItem("rest-timer-v1");
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed.endsAt > Date.now() ? parsed.endsAt : null;
+        } catch { return null; }
+      });
+      const [restContext, setRestContext] = useState(() => {
+        try {
+          const raw = localStorage.getItem("rest-timer-v1");
+          if (!raw) return null;
+          const parsed = JSON.parse(raw);
+          return parsed.endsAt > Date.now() ? parsed.context : null;
+        } catch { return null; }
+      });
+      const [nowTickMs, setNowTickMs] = useState(Date.now());
+      const restFiredRef = useRef(false);
       const [toast, setToast] = useState("");
       const [user, setUser] = useState(null);
       const [authReady, setAuthReady] = useState(!CLOUD_ENABLED);
@@ -461,6 +503,94 @@
         const id = setInterval(() => setNowMs(Date.now()), 30_000);
         return () => clearInterval(id);
       }, []);
+
+      // Rest timer tick — 250ms feels smooth enough for a 1s-precision
+      // countdown while cheap enough not to matter. When endsAt is null,
+      // no interval runs at all.
+      useEffect(() => {
+        if (!restEndsAt) return;
+        const tick = () => {
+          const now = Date.now();
+          setNowTickMs(now);
+          if (now >= restEndsAt && !restFiredRef.current) {
+            restFiredRef.current = true;
+            fireRestEnd();
+          }
+        };
+        tick(); // fire once immediately in case restEndsAt was in the past
+        const id = setInterval(tick, 250);
+        return () => clearInterval(id);
+      }, [restEndsAt]);
+
+      const playBeep = () => {
+        try {
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          if (!AudioCtx) return;
+          const ctx = new AudioCtx();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.25, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.5);
+        } catch {}
+      };
+
+      const fireRestEnd = () => {
+        // Haptic — bzz-bzz-BZZ pattern, more attention-grabbing than one buzz.
+        if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 400]);
+        playBeep();
+        // Web notification — surfaces on lock screen + mirrors to Apple Watch
+        // when the PWA is installed. No-op if permission not granted.
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          const name = restContext?.exerciseName;
+          const body = name ? `${name} — 開始下一組` : "開始下一組";
+          if (navigator.serviceWorker?.controller && navigator.serviceWorker.ready) {
+            navigator.serviceWorker.ready.then(reg =>
+              reg.showNotification("休息結束", { body, tag: "rest-timer", icon: "./icon.svg", vibrate: [200, 100, 200, 100, 400], silent: false })
+            ).catch(() => {});
+          } else {
+            try { new Notification("休息結束", { body, tag: "rest-timer" }); } catch {}
+          }
+        }
+      };
+
+      const ensureNotificationPerm = () => {
+        if (typeof Notification === "undefined") return;
+        if (Notification.permission === "default") {
+          Notification.requestPermission().catch(() => {});
+        }
+      };
+
+      const startRest = (exerciseName, seconds) => {
+        if (!seconds || seconds <= 0) return;
+        restFiredRef.current = false;
+        const endsAt = Date.now() + seconds * 1000;
+        const context = { exerciseName, originalSeconds: seconds };
+        setRestEndsAt(endsAt);
+        setRestContext(context);
+        localStorage.setItem("rest-timer-v1", JSON.stringify({ endsAt, context }));
+        ensureNotificationPerm();
+      };
+
+      const adjustRest = (deltaSeconds) => {
+        if (!restEndsAt) return;
+        const proposed = restEndsAt + deltaSeconds * 1000;
+        const floor = Date.now() + 5000; // never drop below +5s remaining
+        const newEndsAt = Math.max(floor, proposed);
+        setRestEndsAt(newEndsAt);
+        restFiredRef.current = false;
+        localStorage.setItem("rest-timer-v1", JSON.stringify({ endsAt: newEndsAt, context: restContext }));
+      };
+
+      const stopRest = () => {
+        setRestEndsAt(null);
+        setRestContext(null);
+        restFiredRef.current = false;
+        localStorage.removeItem("rest-timer-v1");
+      };
 
       // Push a single catalog entry up to Supabase. Used by both
       // ensureInCatalog (on add) and setCatalogGroup (on edit).
@@ -911,6 +1041,7 @@
                 catalog={catalog}
                 setCatalogGroup={setCatalogGroup}
                 onShowDetails={setViewingDetails}
+                onStartRest={startRest}
               />
             )}
             {view === "history" && (
@@ -924,6 +1055,15 @@
           </main>
           {viewingDetails && (
             <ExerciseDetailSheet name={viewingDetails} onClose={() => setViewingDetails(null)} />
+          )}
+          {restEndsAt && (
+            <RestTimerBar
+              endsAt={restEndsAt}
+              nowMs={nowTickMs}
+              context={restContext}
+              onAdjust={adjustRest}
+              onStop={stopRest}
+            />
           )}
         </div>
       );
@@ -981,6 +1121,37 @@
               )}
             </div>
           </main>
+        </div>
+      );
+    }
+
+    // ─── RestTimerBar ──────────────────────────────────────────────────────
+    // Sticky bottom bar showing the current rest countdown. Progress
+    // bar shrinks from full → empty; the whole bar flashes red for the
+    // last 5 seconds. Adjust ±15s / skip.
+    function RestTimerBar({ endsAt, nowMs, context, onAdjust, onStop }) {
+      const remainingMs = Math.max(0, endsAt - nowMs);
+      const totalMs = (context?.originalSeconds || 60) * 1000;
+      const secs = Math.ceil(remainingMs / 1000);
+      const mm = Math.floor(secs / 60);
+      const ss = secs % 60;
+      const progress = Math.max(0, Math.min(1, remainingMs / totalMs));
+      const critical = remainingMs > 0 && remainingMs < 5000;
+      const done = remainingMs <= 0;
+      return (
+        <div style={{...S.restBar, ...(critical ? S.restBarCritical : {}), ...(done ? S.restBarDone : {})}}>
+          <div style={{...S.restBarProgress, width: `${progress * 100}%`}} />
+          <div style={S.restBarInner}>
+            <div style={S.restBarLeft}>
+              <div style={S.restBarLabel}>{done ? "休息結束" : "休息中"}{context?.exerciseName ? ` · ${context.exerciseName}` : ""}</div>
+              <div style={S.restBarTime}>{mm}:{String(ss).padStart(2, "0")}</div>
+            </div>
+            <div style={S.restBarActions}>
+              <button style={S.restBarAdjustBtn} onClick={() => onAdjust(-15)}>-15</button>
+              <button style={S.restBarAdjustBtn} onClick={() => onAdjust(15)}>+15</button>
+              <button style={S.restBarStopBtn} onClick={onStop} title="結束">✕</button>
+            </div>
+          </div>
         </div>
       );
     }
@@ -1065,7 +1236,7 @@
     // ─── TodayView ─────────────────────────────────────────────────────────
     function TodayView({ session, selectedDate, setSelectedDate, newExercise, setNewExercise,
       handleAddExercise, addSet,
-      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog, setCatalogGroup, onShowDetails }) {
+      updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, catalog, setCatalogGroup, onShowDetails, onStartRest }) {
 
       // Total volume sums only weight×reps exercises (cardio contributes 0).
       const totalVolume = session
@@ -1119,7 +1290,7 @@
                   deleteSet={deleteSet} deleteExercise={deleteExercise}
                   editingSet={editingSet} setEditingSet={setEditingSet}
                   meta={catalog?.[ex.name]} setCatalogGroup={setCatalogGroup}
-                  onShowDetails={onShowDetails} />
+                  onShowDetails={onShowDetails} onStartRest={onStartRest} />
               ))
             : (
               <div style={S.emptyState}>
@@ -1193,12 +1364,13 @@
     }
 
     // ─── ExerciseCard ──────────────────────────────────────────────────────
-    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta, setCatalogGroup, onShowDetails }) {
+    function ExerciseCard({ ex, exIdx, addSet, updateSet, deleteSet, deleteExercise, editingSet, setEditingSet, meta, setCatalogGroup, onShowDetails, onStartRest }) {
       const fmt = getFormat(meta);
       const currentGroup = meta?.group || "其他";
       const groupColor = MUSCLE_GROUP_COLORS[currentGroup] || MUSCLE_GROUP_COLORS["其他"];
       const summary = fmt.summary(ex.sets);
       const hasDetails = !!EXERCISE_DETAILS[ex.name];
+      const restSeconds = getRestSeconds(ex.name);
 
       return (
         <div style={S.card}>
@@ -1256,7 +1428,14 @@
               })}
             </div>
           )}
-          <button style={S.addSetBtn} onClick={() => addSet(exIdx)}>＋ 新增組數</button>
+          <div style={S.setActionRow}>
+            <button style={S.addSetBtn} onClick={() => addSet(exIdx)}>＋ 新增組數</button>
+            {restSeconds > 0 && (
+              <button style={S.restStartBtn} onClick={() => onStartRest?.(ex.name, restSeconds)} title="開始休息倒數">
+                ⏱ {restSeconds}s
+              </button>
+            )}
+          </div>
         </div>
       );
     }
@@ -1431,7 +1610,20 @@
       setNum: { color: C.accent, fontWeight: 700 },
       setInput: { flex: 1, background: C.surfaceHigh, border: `1px solid ${C.accent}`, borderRadius: 6, color: C.text, fontSize: 14, padding: "4px 8px", marginRight: 6, fontFamily: "inherit", width: 0, outline: "none" },
       deleteSetBtn: { background: "none", border: "none", color: C.red, fontSize: 12, cursor: "pointer", padding: "2px 4px", width: 28, flexShrink: 0 },
-      addSetBtn: { background: "none", border: `1px dashed ${C.border}`, color: C.textMuted, borderRadius: 8, padding: "8px 0", width: "100%", cursor: "pointer", fontSize: 13, fontFamily: "inherit" },
+      addSetBtn: { background: "none", border: `1px dashed ${C.border}`, color: C.textMuted, borderRadius: 8, padding: "8px 0", flex: 1, cursor: "pointer", fontSize: 13, fontFamily: "inherit" },
+      setActionRow: { display: "flex", gap: 8 },
+      restStartBtn: { background: C.surfaceHigh, border: `1px solid ${C.accent}55`, color: C.accent, borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 13, fontFamily: "inherit", fontWeight: 700, whiteSpace: "nowrap" },
+      restBar: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 480, background: C.surface, borderTop: `1px solid ${C.accent}`, zIndex: 900, overflow: "hidden", boxShadow: "0 -4px 20px rgba(0,0,0,0.4)" },
+      restBarCritical: { borderTopColor: C.red, animation: "pulse 0.6s infinite" },
+      restBarDone: { borderTopColor: C.accent, boxShadow: `0 -6px 20px ${C.accent}55` },
+      restBarProgress: { position: "absolute", top: 0, left: 0, height: "100%", background: C.accent + "22", transition: "width 250ms linear" },
+      restBarInner: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", gap: 8 },
+      restBarLeft: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0 },
+      restBarLabel: { fontSize: 11, color: C.textMuted, letterSpacing: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+      restBarTime: { fontSize: 26, fontWeight: 900, color: C.accent, fontVariantNumeric: "tabular-nums", lineHeight: 1 },
+      restBarActions: { display: "flex", gap: 6, flexShrink: 0 },
+      restBarAdjustBtn: { background: C.surfaceHigh, border: `1px solid ${C.border}`, color: C.text, fontSize: 12, padding: "6px 10px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontWeight: 700 },
+      restBarStopBtn: { background: "none", border: `1px solid ${C.border}`, color: C.textMuted, fontSize: 12, width: 32, height: 32, borderRadius: "50%", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center" },
       addExSection: { marginTop: 8 },
       addExRow: { display: "flex", gap: 8 },
       input: { flex: 1, background: C.surface, border: `1px solid ${C.border}`, borderRadius: C.radius, color: C.text, fontSize: 14, padding: "10px 14px", fontFamily: "inherit", outline: "none" },
@@ -1468,6 +1660,16 @@
     };
 
     ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+
+    // Register the service worker so the app is installable as a PWA and
+    // so rest-timer notifications can surface on lock screen / Apple Watch.
+    // Registration is deferred until 'load' to avoid competing with React
+    // bootup.
+    if ("serviceWorker" in navigator) {
+      window.addEventListener("load", () => {
+        navigator.serviceWorker.register("./sw.js").catch(() => {});
+      });
+    }
   </script>
 </body>
 </html>

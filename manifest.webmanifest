@@ -1,0 +1,14 @@
+{
+  "name": "訓練紀錄",
+  "short_name": "訓練",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f0f0f",
+  "theme_color": "#e8ff47",
+  "description": "健身重訓紀錄與休息倒數",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
