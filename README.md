@@ -2,7 +2,7 @@
 
 簡單、快速的健身訓練 log 工具。
 
-🔗 **https://jimmyhusaas.github.io/fittinglog**
+🔗 **https://94c4c686-fittinglog.jimmyhusaas.workers.dev**
 
 ## 功能
 
@@ -18,4 +18,4 @@
 
 - React 18（CDN）
 - localStorage 持久化
-- 部署於 GitHub Pages
+- 部署於 Cloudflare Workers（原 GitHub Pages 因 backend stuck state 遷離）

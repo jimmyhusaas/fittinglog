@@ -83,6 +83,7 @@ Dashboard → **Authentication** → **URL Configuration**：
 
 - **Site URL**：填你部署 app 的網址。例如：
   - 本機開發：`http://localhost:8000`
+  - Cloudflare Workers/Pages：`https://xxxxxxxx-fittinglog.你的帳號.workers.dev`
   - GitHub Pages：`https://你的帳號.github.io/fittinglog/`
 - **Redirect URLs**：把上面的網址也加進去
 
